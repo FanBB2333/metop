@@ -9,9 +9,10 @@ A Python-based GPU/ANE monitoring tool for Apple Silicon Macs. Like `nvtop` or `
   - GPU memory usage (in-use vs allocated)
   - Real-time sparkline history
 
-- **ANE Monitoring** (requires sudo)
-  - Power consumption in mW/W
-  - Estimated utilization based on power draw
+- **ANE + Power Metrics** (requires sudo / `powermetrics`)
+  - CPU/GPU/ANE/Total power (mW/W)
+  - GPU/ANE frequency and active/idle residency (when available)
+  - ANE utilization estimated from residency (fallback: power-based)
   
 - **System Info**
   - Chip detection (M1/M2/M3/M4 series)
@@ -34,11 +35,14 @@ pip install -e ".[fast]"
 # Basic monitoring (GPU only)
 metop
 
-# Full monitoring with ANE (requires sudo)
+# Enable ANE + power metrics (requires sudo)
 sudo metop
 
 # Custom refresh interval (500ms)
 metop -i 500
+
+# Disable ANE/powermetrics even with sudo
+metop --no-ane
 
 # Debug mode (single sample, raw output)
 metop --debug
@@ -46,17 +50,7 @@ metop --debug
 
 ## Screenshot
 
-```
-┌─────────────────────── metop ────────────────────────┐
-│ Apple M1 Pro  |  CPU: 10 cores  |  GPU: 16 cores     │
-└──────────────────────────────────────────────────────┘
-┌─── GPU (Metal) ───┐  ┌─── ANE (Neural Engine) ───┐
-│ Device   [████░░] │  │ Utilization [██░░░░░░░░] │
-│ Renderer [███░░░] │  │ Power: 2.5 W              │
-│ Tiler    [██░░░░] │  └───────────────────────────┘
-│ Memory: 1.2 GB    │
-└───────────────────┘
-```
+![metop main screen](resources/sample1.png)
 
 ## How It Works
 
@@ -66,8 +60,13 @@ Uses `IOKit` via `ioreg` command to query the `AGXAccelerator` driver's `Perform
 - `Renderer Utilization %` - Shader/compute units
 - `Tiler Utilization %` - Geometry processing
 
-### ANE Monitoring
-Uses `powermetrics` to get Neural Engine power consumption. Requires `sudo` because `powermetrics` needs root access. ANE utilization is estimated from:
+### ANE + Power Metrics
+Uses `powermetrics` (`-f plist`) to collect CPU/GPU/ANE power and residency/frequency data. Requires `sudo` because `powermetrics` needs root access.
+
+ANE utilization is estimated from:
+- preferred: ANE active residency reported by `powermetrics`
+- fallback: power-based estimate
+
 ```
 utilization = (current_power / max_power) * 100%
 ```
