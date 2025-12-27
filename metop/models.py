@@ -47,6 +47,26 @@ class CPUSample:
 
 
 @dataclass
+class PowerMetricsSample:
+    """Power/frequency metrics from powermetrics (requires sudo)."""
+
+    cpu_power_mw: float = 0.0
+    gpu_power_mw: float = 0.0
+    ane_power_mw: float = 0.0
+    combined_power_mw: float = 0.0
+
+    gpu_freq_mhz: float = 0.0
+    gpu_active_residency: float = 0.0  # 0-100%
+    gpu_idle_residency: float = 0.0  # 0-100%
+
+    ane_freq_mhz: float = 0.0
+    ane_active_residency: float = 0.0  # 0-100%
+    ane_idle_residency: float = 0.0  # 0-100%
+
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
 class MemorySample:
     """System memory metrics."""
     
@@ -103,6 +123,7 @@ class CombinedSample:
     gpu: Optional[GPUSample] = None
     ane: Optional[ANESample] = None
     cpu: Optional[CPUSample] = None
+    power: Optional[PowerMetricsSample] = None
     memory: Optional[MemorySample] = None
     processes: List[ProcessGPUUsage] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)

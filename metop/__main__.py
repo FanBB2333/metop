@@ -12,9 +12,11 @@ import os
 
 
 def check_sudo_hint() -> None:
-    """Print hint about sudo for ANE monitoring."""
+    """Print hint about sudo for powermetrics-based metrics."""
     if os.geteuid() != 0:
-        print("\033[33mNote: Run with 'sudo metop' to enable ANE (Neural Engine) monitoring.\033[0m")
+        print(
+            "\033[33mNote: Run with 'sudo metop' to enable ANE + power metrics (powermetrics).\033[0m"
+        )
         print()
 
 

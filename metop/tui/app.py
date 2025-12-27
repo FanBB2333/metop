@@ -20,7 +20,7 @@ from rich.style import Style
 from rich import box
 
 from ..collectors import GPUCollector, ANECollector, SystemCollector, MemoryCollector
-from ..models import GPUSample, ANESample, SystemInfo, MemorySample
+from ..models import GPUSample, ANESample, PowerMetricsSample, SystemInfo, MemorySample
 
 
 def format_bytes(bytes_val: int) -> str:
@@ -116,6 +116,7 @@ class MetopApp:
         self.last_gpu: Optional[GPUSample] = None
         self.last_ane: Optional[ANESample] = None
         self.last_memory: Optional[MemorySample] = None
+        self.last_power: Optional[PowerMetricsSample] = None
         
         # History for averaging/graphing
         self.gpu_history: list[float] = []
@@ -129,6 +130,7 @@ class MetopApp:
         
         if self.ane_collector:
             self.last_ane = self.ane_collector.sample()
+            self.last_power = self.ane_collector.get_last_power_sample()
         
         # Update history
         if self.last_gpu:
@@ -145,6 +147,9 @@ class MetopApp:
         """Create header panel with system info."""
         if self.system_info is None:
             self.system_info = self.system_collector.collect()
+            if self.ane_collector:
+                # Use chip-specific max ANE power for better utilization estimates.
+                self.ane_collector.max_ane_power_mw = self.system_info.ane_max_power_mw
         
         info = self.system_info
         mem_total = format_bytes(info.memory_total_bytes)
@@ -176,6 +181,15 @@ class MetopApp:
             # Memory stats
             content.append("Memory: ", style="bold")
             content.append(f"{format_bytes(gpu.memory_used_bytes)} / {format_bytes(gpu.memory_allocated_bytes)} allocated")
+
+            # MPS-related power/frequency info (from powermetrics, requires sudo)
+            if self.last_power:
+                content.append("\n\nGPU Power: ", style="bold")
+                content.append(format_power(self.last_power.gpu_power_mw))
+                if self.last_power.gpu_freq_mhz > 0:
+                    content.append(f"  |  {self.last_power.gpu_freq_mhz:.0f} MHz", style="dim")
+                if self.last_power.gpu_active_residency > 0:
+                    content.append(f"  |  Active {self.last_power.gpu_active_residency:.1f}%", style="dim")
             
             # Additional stats
             if gpu.tiled_scene_bytes > 0:
@@ -194,7 +208,7 @@ class MetopApp:
         if not self.show_ane:
             content.append("Run with ", style="dim")
             content.append("sudo", style="bold yellow")
-            content.append(" to enable ANE monitoring", style="dim")
+            content.append(" to enable ANE + power metrics", style="dim")
         elif self.last_ane:
             ane = self.last_ane
             
@@ -208,6 +222,12 @@ class MetopApp:
             
             if ane.energy_mj > 0:
                 content.append(f"  (Energy: {ane.energy_mj:.1f} mJ/sample)")
+
+            if self.last_power and self.last_power.ane_freq_mhz > 0:
+                content.append("\n\nFreq: ", style="bold")
+                content.append(f"{self.last_power.ane_freq_mhz:.0f} MHz")
+                if self.last_power.ane_active_residency > 0:
+                    content.append(f"  |  Active {self.last_power.ane_active_residency:.1f}%", style="dim")
         else:
             content.append("Waiting for ANE data...", style="dim")
         
@@ -268,8 +288,40 @@ class MetopApp:
         return result
     
     def _create_history_panel(self) -> Panel:
-        """Create sparkline history panel."""
+        """Create extra info panel (power + sparklines)."""
         content = Text()
+
+        if self.last_power:
+            p = self.last_power
+            content.append("Power: ", style="bold")
+            content.append(f"CPU {format_power(p.cpu_power_mw)}", style="cyan")
+            content.append("  |  ", style="dim")
+            content.append(f"GPU {format_power(p.gpu_power_mw)}", style="green")
+            if self.show_ane:
+                content.append("  |  ", style="dim")
+                content.append(f"ANE {format_power(p.ane_power_mw)}", style="magenta")
+            if p.combined_power_mw > 0:
+                content.append("  |  ", style="dim")
+                content.append(f"Total {format_power(p.combined_power_mw)}", style="bold")
+
+            if p.gpu_freq_mhz > 0 or p.ane_freq_mhz > 0:
+                content.append("\n", style="dim")
+                if p.gpu_freq_mhz > 0:
+                    content.append(f"GPU {p.gpu_freq_mhz:.0f} MHz", style="green")
+                    if p.gpu_active_residency > 0:
+                        content.append(f" ({p.gpu_active_residency:.1f}% active)", style="dim")
+                if self.show_ane and p.ane_freq_mhz > 0:
+                    content.append("  |  ", style="dim")
+                    content.append(f"ANE {p.ane_freq_mhz:.0f} MHz", style="magenta")
+                    if p.ane_active_residency > 0:
+                        content.append(f" ({p.ane_active_residency:.1f}% active)", style="dim")
+            content.append("\n\n")
+        elif self.show_ane:
+            content.append("Waiting for power data...", style="dim")
+            content.append("\n\n")
+        else:
+            content.append("Run with sudo to enable power metrics", style="dim")
+            content.append("\n\n")
         
         content.append("GPU: ", style="green")
         content.append(self._create_sparkline(self.gpu_history))

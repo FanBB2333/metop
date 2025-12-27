@@ -6,7 +6,6 @@ Apple Silicon GPUs (AGXAccelerator) without requiring sudo privileges.
 """
 
 import subprocess
-import plistlib
 import time
 import re
 from typing import Optional, Dict, Any
@@ -24,25 +23,6 @@ class GPUCollector:
     
     def __init__(self):
         self._last_sample: Optional[GPUSample] = None
-        self._gpu_entry_name: Optional[str] = None
-        self._detect_gpu_entry()
-    
-    def _detect_gpu_entry(self) -> None:
-        """Detect the GPU accelerator entry name."""
-        try:
-            # Find the AGX accelerator class
-            result = subprocess.run(
-                ["ioreg", "-r", "-c", "AGXAccelerator", "-a"],
-                capture_output=True,
-                text=False,
-                timeout=5
-            )
-            if result.returncode == 0 and result.stdout:
-                data = plistlib.loads(result.stdout)
-                if data and len(data) > 0:
-                    self._gpu_entry_name = data[0].get("IOClass", "AGXAccelerator")
-        except Exception:
-            self._gpu_entry_name = None
     
     def _parse_performance_stats(self, output: str) -> Optional[Dict[str, Any]]:
         """
@@ -58,6 +38,9 @@ class GPUCollector:
         # Use a pattern that captures the full nested dictionary
         pattern = r'"PerformanceStatistics"\s*=\s*\{([^}]+)\}'
         
+        best_stats: Optional[Dict[str, Any]] = None
+        best_allocated = -1
+
         for match in re.finditer(pattern, output):
             stats_str = match.group(1)
             
@@ -84,9 +67,12 @@ class GPUCollector:
                     stats[key] = int(value_str)
             
             if stats:
-                return stats
+                allocated = stats.get("Alloc system memory", 0)
+                if isinstance(allocated, (int, float)) and int(allocated) > best_allocated:
+                    best_allocated = int(allocated)
+                    best_stats = stats
         
-        return None
+        return best_stats
 
     
     def sample(self) -> GPUSample:
@@ -99,10 +85,10 @@ class GPUCollector:
         sample = GPUSample(timestamp=time.time())
         
         try:
-            # Use ioreg to get GPU stats - this doesn't require sudo
-            # Note: ioreg output may contain non-UTF-8 bytes, so we decode manually
+            # Use ioreg to get GPU stats (AGXAccelerator) - no sudo required.
+            # Note: ioreg output may contain non-UTF-8 bytes, so we decode manually.
             result = subprocess.run(
-                ["ioreg", "-l"],
+                ["ioreg", "-r", "-c", "AGXAccelerator", "-l", "-w", "0"],
                 capture_output=True,
                 text=False,  # Get bytes, decode manually
                 timeout=5

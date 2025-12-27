@@ -36,14 +36,17 @@ class MemoryCollector:
         import psutil
         
         mem = psutil.virtual_memory()
-        swap = psutil.swap_memory()
+        try:
+            swap = psutil.swap_memory()
+        except OSError:
+            swap = None
         
         return MemorySample(
             total_bytes=mem.total,
             used_bytes=mem.used,
             available_bytes=mem.available,
-            swap_total_bytes=swap.total,
-            swap_used_bytes=swap.used,
+            swap_total_bytes=swap.total if swap else 0,
+            swap_used_bytes=swap.used if swap else 0,
             timestamp=time.time()
         )
     
@@ -113,7 +116,10 @@ class MemoryCollector:
             MemorySample with current memory statistics.
         """
         if self._psutil_available:
-            sample = self._sample_with_psutil()
+            try:
+                sample = self._sample_with_psutil()
+            except Exception:
+                sample = self._sample_with_sysctl()
         else:
             sample = self._sample_with_sysctl()
         
