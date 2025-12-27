@@ -216,19 +216,22 @@ class MetopApp:
     def _create_memory_panel(self) -> Panel:
         """Create system memory panel."""
         content = Text()
-        
+
         if self.last_memory:
             mem = self.last_memory
-            
+
             # Memory usage bar
             content.append_text(create_bar(mem.usage_percent, label="RAM"))
             content.append("\n\n")
-            
-            # Memory details
-            content.append("Used: ", style="bold")
-            content.append(f"{format_bytes(mem.used_bytes)}")
-            content.append("  Available: ", style="bold")
-            content.append(f"{format_bytes(mem.available_bytes)}")
+
+            # Memory details - show total, used (total - available), and available
+            # This matches Activity Monitor's calculation on macOS
+            effective_used = mem.total_bytes - mem.available_bytes
+            content.append(f"{format_bytes(effective_used)}", style="bold")
+            content.append(f" / {format_bytes(mem.total_bytes)}")
+            content.append("  (", style="dim")
+            content.append(f"{format_bytes(mem.available_bytes)} available", style="green")
+            content.append(")", style="dim")
             
             # Swap if used
             if mem.swap_used_bytes > 0:

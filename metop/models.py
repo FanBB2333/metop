@@ -59,9 +59,16 @@ class MemorySample:
     
     @property
     def usage_percent(self) -> float:
+        """Calculate memory usage percentage.
+        
+        On macOS, this uses (total - available) / total to match
+        Activity Monitor's memory pressure calculation.
+        """
         if self.total_bytes == 0:
             return 0.0
-        return (self.used_bytes / self.total_bytes) * 100
+        # Use (total - available) for accurate usage on macOS
+        # This accounts for compressed memory and cached files
+        return ((self.total_bytes - self.available_bytes) / self.total_bytes) * 100
 
 
 @dataclass
