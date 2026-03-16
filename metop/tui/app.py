@@ -577,6 +577,8 @@ class MetopApp:
             disk = self.last_disk
             content.append_text(create_bar(disk.usage_percent, width=10, label="Disk"))
             content.append("\n")
+            if disk.usage_source:
+                content.append(f"{disk.usage_source} ", style="dim")
             content.append(
                 f"{format_bytes(disk.used_bytes)} / {format_bytes(disk.total_bytes)}",
                 style="bold",

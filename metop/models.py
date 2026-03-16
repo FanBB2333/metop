@@ -107,9 +107,10 @@ class MemorySample:
 
 @dataclass
 class DiskSample:
-    """Filesystem usage and disk throughput metrics."""
+    """Disk usage and throughput metrics."""
 
     mount_point: str = "/"
+    usage_source: str = ""
     total_bytes: int = 0
     used_bytes: int = 0
     free_bytes: int = 0
