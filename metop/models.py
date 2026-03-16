@@ -22,6 +22,7 @@ class GPUSample:
     recovery_count: int = 0
     split_scene_count: int = 0
     tiled_scene_bytes: int = 0
+    processes: List["ProcessGPUUsage"] = field(default_factory=list)
 
 
 @dataclass
@@ -98,6 +99,9 @@ class ProcessGPUUsage:
     pid: int
     name: str
     gpu_time_ms: float = 0.0  # GPU time in milliseconds
+    gpu_percent: float = 0.0  # GPU time normalized by sample interval
+    api: str = ""
+    command_queue_count: int = 0
 
 
 @dataclass

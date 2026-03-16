@@ -9,6 +9,7 @@ Usage:
 import argparse
 import sys
 import os
+import time
 
 
 def check_sudo_hint() -> None:
@@ -106,6 +107,22 @@ For bug reports and contributions:
         print(f"Tiler Utilization: {gpu.tiler_utilization}%")
         print(f"Memory Used: {gpu.memory_used_bytes / (1024**2):.1f} MB")
         print(f"Memory Allocated: {gpu.memory_allocated_bytes / (1024**2):.1f} MB")
+        warmup_interval_s = max(0.2, min(args.interval / 1000, 1.0))
+        time.sleep(warmup_interval_s)
+        gpu = gpu_collector.sample()
+        if gpu.processes:
+            print()
+            print("=== Top GPU Processes ===")
+            for process in gpu.processes[:5]:
+                details = [f"pid {process.pid}", f"{process.gpu_percent:.1f}%"]
+                if process.command_queue_count > 0:
+                    details.append(f"q{process.command_queue_count}")
+                if process.api:
+                    details.append(process.api)
+                print(
+                    f"{process.name}: {process.gpu_time_ms:.1f} ms"
+                    f" ({', '.join(details)})"
+                )
         print()
         
         print("=== Memory Sample ===")

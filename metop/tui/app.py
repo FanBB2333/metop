@@ -2,21 +2,18 @@
 Terminal User Interface for metop using Rich.
 
 This provides a real-time dashboard showing GPU, ANE, and system metrics
-with colorful progress bars and auto-refreshing display.
+with colorful progress bars, top GPU processes, and auto-refreshing display.
 """
 
 import time
-import os
-from typing import Optional
+from typing import Optional, Union
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
 from rich.layout import Layout
 from rich.text import Text
-from rich.progress import Progress, BarColumn, TextColumn, TaskID
-from rich.style import Style
 from rich import box
 
 from ..collectors import GPUCollector, ANECollector, SystemCollector, MemoryCollector
@@ -41,6 +38,13 @@ def format_power(power_mw: float) -> str:
         return f"{power_mw:.0f} mW"
     else:
         return f"{power_mw / 1000:.2f} W"
+
+
+def format_duration_ms(duration_ms: float) -> str:
+    """Format milliseconds into a compact duration string."""
+    if duration_ms < 1000:
+        return f"{duration_ms:.1f} ms"
+    return f"{duration_ms / 1000:.2f} s"
 
 
 def get_utilization_color(value: float) -> str:
@@ -288,7 +292,7 @@ class MetopApp:
         return result
     
     def _create_history_panel(self) -> Panel:
-        """Create extra info panel (power + sparklines)."""
+        """Create extra info panel (power + sparklines + top processes)."""
         content = Text()
 
         if self.last_power:
@@ -329,8 +333,52 @@ class MetopApp:
         if self.show_ane:
             content.append("\nANE: ", style="magenta")
             content.append(self._create_sparkline(self.ane_history))
-        
-        return Panel(content, title="History (last 60s)", border_style="dim", box=box.ROUNDED)
+
+        sections: list[object] = [content, Text(""), Text("Top GPU Processes", style="bold")]
+        sections.append(self._create_process_table())
+
+        return Panel(
+            Group(*sections),
+            title="Power, History & Processes",
+            border_style="dim",
+            box=box.ROUNDED,
+        )
+
+    def _create_process_table(self) -> Union[Table, Text]:
+        """Create a compact top-process view from the latest GPU sample."""
+        if len(self.gpu_history) < 2:
+            return Text("Collecting per-process GPU deltas...", style="dim")
+
+        if not self.last_gpu or not self.last_gpu.processes:
+            return Text(
+                f"No GPU-active processes in the last {self.interval_ms} ms",
+                style="dim",
+            )
+
+        table = Table(box=None, expand=True, pad_edge=False, show_header=True)
+        table.add_column("Process", overflow="ellipsis")
+        table.add_column("GPU %", justify="right", no_wrap=True)
+        table.add_column("GPU Time", justify="right", no_wrap=True)
+
+        for process in self.last_gpu.processes[:5]:
+            name = Text(process.name)
+            meta_parts = [f"pid {process.pid}"]
+            if process.command_queue_count > 0:
+                meta_parts.append(f"q{process.command_queue_count}")
+            if process.api and process.api != "Metal":
+                meta_parts.append(process.api)
+            if meta_parts:
+                name.append("  ")
+                name.append(" | ".join(meta_parts), style="dim")
+
+            percent = Text(
+                f"{process.gpu_percent:5.1f}%",
+                style=get_utilization_color(min(process.gpu_percent, 100.0)),
+            )
+            gpu_time = Text(format_duration_ms(process.gpu_time_ms))
+            table.add_row(name, percent, gpu_time)
+
+        return table
     
     def _create_layout(self) -> Layout:
         """Create the main layout."""

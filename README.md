@@ -7,6 +7,7 @@ A Python-based GPU/ANE monitoring tool for Apple Silicon Macs. Like `nvtop` or `
 - **GPU Monitoring** (no sudo required)
   - Device, Renderer, and Tiler utilization percentage
   - GPU memory usage (in-use vs allocated)
+  - Top GPU-active processes from AGX user client GPU time deltas
   - Real-time sparkline history
 
 - **ANE + Power Metrics** (requires sudo / `powermetrics`)
@@ -59,6 +60,11 @@ Uses `IOKit` via `ioreg` command to query the `AGXAccelerator` driver's `Perform
 - `Device Utilization %` - Overall GPU busy percentage
 - `Renderer Utilization %` - Shader/compute units
 - `Tiler Utilization %` - Geometry processing
+- Per-process GPU activity by diffing each AGX user client's `accumulatedGPUTime`
+
+Per-process activity is reported as GPU time over the sample window, normalized
+into an estimated percentage. This is a best-effort approximation, not a direct
+hardware residency counter.
 
 ### ANE + Power Metrics
 Uses `powermetrics` (`-f plist`) to collect CPU/GPU/ANE power and residency/frequency data. Requires `sudo` because `powermetrics` needs root access.
