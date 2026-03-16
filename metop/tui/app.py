@@ -329,7 +329,7 @@ class MetopApp:
             panel_height = max(12, int(content_height * 0.58))
         else:
             panel_height = max(8, int(content_height * 0.28))
-        return max(5, panel_height - 6)
+        return max(5, panel_height - 4)
 
     def _visible_process_slice(self, limit: int) -> tuple[list[ProcessGPUUsage], int, int]:
         """Return the visible process window and clamp scroll/selection."""
@@ -608,7 +608,7 @@ class MetopApp:
 
     def _create_process_details(self, visible_start: int, visible_end: int) -> Text:
         """Create selected-process detail line."""
-        details = Text()
+        details = Text(no_wrap=True, overflow="ellipsis")
         processes = self.last_gpu.processes if self.last_gpu else []
         if not processes:
             details.append("No selected process", style="dim")
@@ -630,13 +630,11 @@ class MetopApp:
             details.append(f"  |  threads {selected.thread_count}", style="dim")
         details.append(f"  |  API {selected.api or '-'}", style="dim")
         details.append(f"  |  queues {selected.command_queue_count}", style="dim")
-
-        details.append("\n", style="dim")
         details.append(
-            f"Visible {visible_start + 1}-{visible_end} / {len(processes)}",
+            f"  |  visible {visible_start + 1}-{visible_end}/{len(processes)}",
             style="dim",
         )
-        details.append("  |  ↑/↓ select  |  mouse wheel scroll", style="dim")
+        details.append("  |  ↑/↓ select  |  wheel scroll", style="dim")
         return details
 
     def _create_process_panel(self) -> Panel:
@@ -645,7 +643,7 @@ class MetopApp:
         table = self._create_process_table(limit)
         _, start_index, end_index = self._visible_process_slice(limit)
         details = self._create_process_details(start_index, end_index)
-        content = Group(table, Text(""), details)
+        content = Group(table, details)
         return Panel(
             content,
             title="Top GPU Processes",
