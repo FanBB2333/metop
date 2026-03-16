@@ -613,18 +613,50 @@ class MetopApp:
             result += blocks[index]
         return result
 
+    def _history_sparkline_width(self, columns: int = 1) -> int:
+        """Estimate a sparkline width that fills the history panel without wrapping."""
+        if columns <= 1:
+            return max(16, min(36, self.console.size.width // 4))
+        return max(8, min(18, self.console.size.width // 8))
+
+    def _create_history_line(
+        self,
+        label: str,
+        history: list[float],
+        color: str,
+        width: int,
+    ) -> Text:
+        """Create a compact one-line history entry."""
+        current = history[-1] if history else 0.0
+        line = Text(no_wrap=True, overflow="crop")
+        line.append(f"{label} ", style=f"bold {color}")
+        line.append(self._create_sparkline(history, width=width), style=color)
+        line.append(f" {current:4.1f}%", style="dim")
+        return line
+
     def _create_history_panel(self) -> Panel:
         """Create compact history panel."""
-        content = Text()
-        content.append("GPU ", style="green")
-        content.append(self._create_sparkline(self.gpu_history))
-        content.append("\nCPU ", style="cyan")
-        content.append(self._create_sparkline(self.cpu_history))
-        if self.show_ane:
-            content.append("\nANE ", style="magenta")
-            content.append(self._create_sparkline(self.ane_history))
+        top_row = Table.grid(expand=True)
+        top_row.add_column(ratio=1)
+        top_row.add_column(ratio=1)
+        top_width = self._history_sparkline_width(columns=2)
+        top_row.add_row(
+            self._create_history_line("GPU", self.gpu_history, "green", top_width),
+            self._create_history_line("CPU", self.cpu_history, "cyan", top_width),
+        )
 
-        return Panel(content, title="History", border_style="dim", box=box.ROUNDED)
+        content: list[object] = [top_row]
+        if self.show_ane:
+            content.append(
+                self._create_history_line(
+                    "ANE",
+                    self.ane_history,
+                    "magenta",
+                    self._history_sparkline_width(columns=1),
+                )
+            )
+
+        return Panel(Group(*content), title="History", border_style="dim", box=box.ROUNDED)
 
     def _create_process_table(self, limit: int) -> Union[Table, Text]:
         """Create a selectable, scrollable process table."""
