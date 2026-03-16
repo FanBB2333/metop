@@ -6,10 +6,12 @@ power, history, and top GPU processes with switchable display modes.
 """
 
 import os
+import queue
 import re
 import select
 import sys
 import termios
+import threading
 import time
 import tty
 from typing import Optional, Union
@@ -256,22 +258,38 @@ class MetopApp:
         self.process_scroll_offset = 0
 
         self._input = InputController()
+        self._sample_queue: queue.Queue[dict] = queue.Queue(maxsize=1)
+        self._stop_event = threading.Event()
+        self._sampler_thread: Optional[threading.Thread] = None
 
-    def _collect_samples(self) -> None:
-        """Collect all samples from collectors."""
-        self.last_gpu = self.gpu_collector.sample()
-        self.last_memory = self.memory_collector.sample()
-        self.last_system_cpu = self.cpu_collector.sample()
-        self.last_disk = self.disk_collector.sample()
+    def _collect_sample_batch(self) -> dict:
+        """Collect a full sample batch in the background."""
+        batch = {
+            "gpu": self.gpu_collector.sample(),
+            "memory": self.memory_collector.sample(),
+            "system_cpu": self.cpu_collector.sample(),
+            "disk": self.disk_collector.sample(),
+            "ane": None,
+            "cpu": None,
+            "power": None,
+        }
 
         if self.ane_collector:
-            self.last_ane = self.ane_collector.sample()
-            self.last_cpu = self.ane_collector.get_last_cpu_sample()
-            self.last_power = self.ane_collector.get_last_power_sample()
-        else:
-            self.last_ane = None
-            self.last_cpu = None
-            self.last_power = None
+            batch["ane"] = self.ane_collector.sample()
+            batch["cpu"] = self.ane_collector.get_last_cpu_sample()
+            batch["power"] = self.ane_collector.get_last_power_sample()
+
+        return batch
+
+    def _apply_sample_batch(self, batch: dict) -> None:
+        """Apply a collected sample batch on the UI thread."""
+        self.last_gpu = batch["gpu"]
+        self.last_memory = batch["memory"]
+        self.last_system_cpu = batch["system_cpu"]
+        self.last_disk = batch["disk"]
+        self.last_ane = batch["ane"]
+        self.last_cpu = batch["cpu"]
+        self.last_power = batch["power"]
 
         if self.last_gpu:
             self.gpu_history.append(self.last_gpu.device_utilization)
@@ -289,6 +307,59 @@ class MetopApp:
                 self.cpu_history.pop(0)
 
         self._sync_process_selection()
+
+    def _start_sampler(self, sample_interval_s: float) -> None:
+        """Start the background sampler thread."""
+        if self._sampler_thread and self._sampler_thread.is_alive():
+            return
+
+        self._stop_event.clear()
+
+        def worker() -> None:
+            next_sample_at = time.monotonic()
+            while not self._stop_event.is_set():
+                now = time.monotonic()
+                if now < next_sample_at:
+                    self._stop_event.wait(next_sample_at - now)
+                    continue
+
+                batch = self._collect_sample_batch()
+                while True:
+                    try:
+                        self._sample_queue.put_nowait(batch)
+                        break
+                    except queue.Full:
+                        try:
+                            self._sample_queue.get_nowait()
+                        except queue.Empty:
+                            break
+
+                next_sample_at = time.monotonic() + sample_interval_s
+
+        self._sampler_thread = threading.Thread(target=worker, daemon=True)
+        self._sampler_thread.start()
+
+    def _stop_sampler(self) -> None:
+        """Stop the background sampler thread."""
+        self._stop_event.set()
+        if self._sampler_thread:
+            self._sampler_thread.join(timeout=1)
+            self._sampler_thread = None
+
+    def _drain_sample_queue(self) -> bool:
+        """Drain queued sample batches and apply the latest one."""
+        latest_batch = None
+        while True:
+            try:
+                latest_batch = self._sample_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        if latest_batch is None:
+            return False
+
+        self._apply_sample_batch(latest_batch)
+        return True
 
     def _sync_process_selection(self) -> None:
         """Keep process selection stable across samples."""
@@ -793,37 +864,36 @@ class MetopApp:
     def run(self) -> None:
         """Run the TUI application."""
         sample_interval_s = max(0.05, self.interval_ms / 1000)
-        ui_frame_interval_s = min(1 / 30, sample_interval_s / 4)
-        refresh_per_second = max(10.0, min(60.0, 1 / ui_frame_interval_s))
+        idle_refresh_interval_s = 0.25
 
         try:
             with self._input:
-                self._collect_samples()
-                next_sample_at = time.monotonic() + sample_interval_s
-                next_frame_at = time.monotonic() + ui_frame_interval_s
+                self._apply_sample_batch(self._collect_sample_batch())
+                self._start_sampler(sample_interval_s)
+                next_idle_refresh_at = time.monotonic() + idle_refresh_interval_s
 
-                with Live(self._render(), console=self.console, refresh_per_second=refresh_per_second) as live:
+                with Live(
+                    self._render(),
+                    console=self.console,
+                    auto_refresh=False,
+                ) as live:
                     while True:
-                        now = time.monotonic()
                         input_changed = self._handle_input()
-                        sampled = False
+                        sampled = self._drain_sample_queue()
+                        now = time.monotonic()
+                        idle_refresh = now >= next_idle_refresh_at
 
-                        if now >= next_sample_at:
-                            self._collect_samples()
-                            next_sample_at = now + sample_interval_s
-                            sampled = True
-
-                        if input_changed or sampled or now >= next_frame_at:
+                        if input_changed or sampled or idle_refresh:
                             live.update(self._render(), refresh=True)
-                            next_frame_at = now + ui_frame_interval_s
+                            next_idle_refresh_at = now + idle_refresh_interval_s
 
-                        sleep_until = min(next_sample_at, next_frame_at)
-                        sleep_s = max(0.005, min(0.02, sleep_until - time.monotonic()))
+                        sleep_s = 0.005 if input_changed else 0.01
                         time.sleep(sleep_s)
 
         except KeyboardInterrupt:
             self.console.print("\n[dim]Goodbye![/dim]")
 
         finally:
+            self._stop_sampler()
             if self.ane_collector:
                 self.ane_collector.stop_streaming()
