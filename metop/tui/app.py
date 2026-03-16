@@ -724,27 +724,36 @@ class MetopApp:
 
     def _handle_input(self) -> None:
         """Handle pending keyboard and mouse input."""
+        state_changed = False
+
         for event in self._input.read_events():
             lowered = event.lower()
             if lowered == "m":
                 self._toggle_display_mode()
+                state_changed = True
             elif event == "1":
                 self.display_mode = "stacked"
+                state_changed = True
             elif event == "2":
                 self.display_mode = "classic"
+                state_changed = True
             elif event in ("up", "k"):
                 self._move_process_selection(-1)
+                state_changed = True
             elif event in ("down", "j"):
                 self._move_process_selection(1)
+                state_changed = True
             elif event == "wheel_up":
                 self._move_process_selection(-1)
+                state_changed = True
             elif event == "wheel_down":
                 self._move_process_selection(1)
+                state_changed = True
+
+        return state_changed
 
     def _render(self) -> Layout:
         """Render the current state."""
-        self._collect_samples()
-
         if self.display_mode == "stacked":
             layout = self._create_stacked_layout()
             layout["header"].update(self._create_header())
@@ -785,15 +794,34 @@ class MetopApp:
 
     def run(self) -> None:
         """Run the TUI application."""
-        refresh_per_second = max(1.0, 1000 / self.interval_ms)
+        sample_interval_s = max(0.05, self.interval_ms / 1000)
+        ui_frame_interval_s = min(1 / 30, sample_interval_s / 4)
+        refresh_per_second = max(10.0, min(60.0, 1 / ui_frame_interval_s))
 
         try:
             with self._input:
+                self._collect_samples()
+                next_sample_at = time.monotonic() + sample_interval_s
+                next_frame_at = time.monotonic() + ui_frame_interval_s
+
                 with Live(self._render(), console=self.console, refresh_per_second=refresh_per_second) as live:
                     while True:
-                        self._handle_input()
-                        live.update(self._render())
-                        time.sleep(self.interval_ms / 1000)
+                        now = time.monotonic()
+                        input_changed = self._handle_input()
+                        sampled = False
+
+                        if now >= next_sample_at:
+                            self._collect_samples()
+                            next_sample_at = now + sample_interval_s
+                            sampled = True
+
+                        if input_changed or sampled or now >= next_frame_at:
+                            live.update(self._render(), refresh=True)
+                            next_frame_at = now + ui_frame_interval_s
+
+                        sleep_until = min(next_sample_at, next_frame_at)
+                        sleep_s = max(0.005, min(0.02, sleep_until - time.monotonic()))
+                        time.sleep(sleep_s)
 
         except KeyboardInterrupt:
             self.console.print("\n[dim]Goodbye![/dim]")
