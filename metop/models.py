@@ -133,6 +133,10 @@ class ProcessGPUUsage:
     name: str
     gpu_time_ms: float = 0.0  # GPU time in milliseconds
     gpu_percent: float = 0.0  # GPU time normalized by sample interval
+    cpu_percent: float = 0.0  # CPU time normalized by sample interval
+    memory_rss_bytes: int = 0
+    thread_count: int = 0
+    status: str = ""
     api: str = ""
     command_queue_count: int = 0
 

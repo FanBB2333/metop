@@ -29,6 +29,7 @@ class GPUCollector:
     def __init__(self):
         self._last_sample: Optional[GPUSample] = None
         self._last_process_totals: Dict[int, int] = {}
+        self._last_process_cpu_times: Dict[int, float] = {}
         self._last_process_sample_time: Optional[float] = None
 
     @staticmethod
@@ -80,8 +81,8 @@ class GPUCollector:
             if isinstance(child, dict):
                 yield from self._iter_registry_entries(child)
 
-    def _resolve_process_names(self, fallbacks: Dict[int, str]) -> Dict[int, str]:
-        """Resolve fuller process names when psutil can improve truncated registry names."""
+    def _collect_process_metadata(self, fallbacks: Dict[int, str]) -> Dict[int, Dict[str, Any]]:
+        """Resolve names and runtime metadata from psutil when available."""
         if not fallbacks:
             return {}
 
@@ -90,24 +91,29 @@ class GPUCollector:
         except ImportError:
             return {}
 
-        resolved: Dict[int, str] = {}
-        target_pids = set(fallbacks)
+        metadata: Dict[int, Dict[str, Any]] = {}
+        for pid, fallback in fallbacks.items():
+            try:
+                proc = psutil.Process(pid)
+                proc_name = proc.name() or fallback
+                cpu_times = proc.cpu_times()
+                metadata[pid] = {
+                    "name": proc_name if proc_name.startswith(fallback) else fallback,
+                    "status": proc.status() or "",
+                    "memory_rss_bytes": int(proc.memory_info().rss),
+                    "thread_count": int(proc.num_threads()),
+                    "cpu_time_seconds": float(cpu_times.user + cpu_times.system),
+                }
+            except Exception:
+                metadata[pid] = {
+                    "name": fallback,
+                    "status": "",
+                    "memory_rss_bytes": 0,
+                    "thread_count": 0,
+                    "cpu_time_seconds": 0.0,
+                }
 
-        try:
-            for proc in psutil.process_iter(["pid", "name"]):
-                info = proc.info
-                pid = info.get("pid")
-                if pid not in target_pids:
-                    continue
-
-                proc_name = info.get("name") or ""
-                fallback = fallbacks[pid]
-                if proc_name and proc_name.startswith(fallback):
-                    resolved[pid] = proc_name
-        except Exception:
-            return resolved
-
-        return resolved
+        return metadata
 
     def _collect_processes(
         self, roots: list[Dict[str, Any]], timestamp: float
@@ -167,28 +173,44 @@ class GPUCollector:
         if self._last_process_sample_time is not None:
             interval_s = max(0.0, timestamp - self._last_process_sample_time)
 
-        resolved_names = self._resolve_process_names(
+        process_metadata = self._collect_process_metadata(
             {pid: data["name"] for pid, data in current_totals.items()}
         )
 
         processes: list[ProcessGPUUsage] = []
+        current_cpu_times: Dict[int, float] = {}
         for pid, data in current_totals.items():
             previous_total = self._last_process_totals.get(pid)
             if previous_total is None or interval_s <= 0:
+                metadata = process_metadata.get(pid)
+                if metadata is not None:
+                    current_cpu_times[pid] = float(metadata.get("cpu_time_seconds", 0.0))
                 continue
 
             delta_ns = data["total_ns"] - previous_total
+            metadata = process_metadata.get(pid, {})
+            current_cpu_time = float(metadata.get("cpu_time_seconds", 0.0))
+            current_cpu_times[pid] = current_cpu_time
             if delta_ns <= 0:
                 continue
 
             gpu_time_ms = delta_ns / 1e6
             gpu_percent = (delta_ns / (interval_s * 1e9)) * 100.0
+            previous_cpu_time = self._last_process_cpu_times.get(pid)
+            cpu_percent = 0.0
+            if previous_cpu_time is not None and current_cpu_time >= previous_cpu_time:
+                cpu_percent = ((current_cpu_time - previous_cpu_time) / interval_s) * 100.0
+
             processes.append(
                 ProcessGPUUsage(
                     pid=pid,
-                    name=resolved_names.get(pid, data["name"]),
+                    name=str(metadata.get("name", data["name"])),
                     gpu_time_ms=gpu_time_ms,
                     gpu_percent=gpu_percent,
+                    cpu_percent=cpu_percent,
+                    memory_rss_bytes=int(metadata.get("memory_rss_bytes", 0)),
+                    thread_count=int(metadata.get("thread_count", 0)),
+                    status=str(metadata.get("status", "")),
                     api=", ".join(sorted(data["apis"])),
                     command_queue_count=data["queue_count"],
                 )
@@ -197,6 +219,7 @@ class GPUCollector:
         self._last_process_totals = {
             pid: data["total_ns"] for pid, data in current_totals.items()
         }
+        self._last_process_cpu_times = current_cpu_times
         self._last_process_sample_time = timestamp
         processes.sort(key=lambda process: process.gpu_time_ms, reverse=True)
 

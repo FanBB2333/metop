@@ -8,6 +8,7 @@ A Python-based GPU/ANE monitoring tool for Apple Silicon Macs. Like `nvtop` or `
   - Device, Renderer, and Tiler utilization percentage
   - GPU memory usage (in-use vs allocated)
   - Top GPU-active processes from AGX user client GPU time deltas
+  - Selectable process list with keyboard and mouse-wheel scrolling
   - Real-time sparkline history
 
 - **System Monitoring**
@@ -21,7 +22,7 @@ A Python-based GPU/ANE monitoring tool for Apple Silicon Macs. Like `nvtop` or `
   - ANE utilization estimated from residency (fallback: power-based)
 
 - **Display Modes**
-  - Default stacked layout: top for GPU/ANE/power, middle for CPU/memory/disk/history, bottom for top GPU processes
+  - Default stacked layout: top for GPU+ANE, CPU, and power; middle for memory, disk, and history; bottom for top GPU processes
   - Runtime switching with `m` (`1` for stacked, `2` for classic)
 
 - **System Info**

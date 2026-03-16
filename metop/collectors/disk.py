@@ -4,6 +4,7 @@ Disk metrics collector using psutil.
 Collects root filesystem usage plus aggregate disk read/write throughput.
 """
 
+import shutil
 import time
 from typing import Optional
 
@@ -41,32 +42,34 @@ class DiskCollector:
         """Collect a disk sample."""
         sample = DiskSample(mount_point=self.mount_point, timestamp=time.time())
 
-        if not self._psutil_available:
-            self._last_sample = sample
-            return sample
-
         try:
-            import psutil
+            if self._psutil_available:
+                import psutil
 
-            usage = psutil.disk_usage(self.mount_point)
-            sample.total_bytes = int(usage.total)
-            sample.used_bytes = int(usage.used)
-            sample.free_bytes = int(usage.free)
+                usage = psutil.disk_usage(self.mount_point)
+                sample.total_bytes = int(usage.total)
+                sample.used_bytes = int(usage.used)
+                sample.free_bytes = int(usage.free)
 
-            io = psutil.disk_io_counters()
-            now = sample.timestamp
-            if io is not None and self._last_io is not None and self._last_io_time is not None:
-                interval_s = max(0.0, now - self._last_io_time)
-                if interval_s > 0:
-                    sample.read_bytes_per_sec = (
-                        max(0, io.read_bytes - self._last_io.read_bytes) / interval_s
-                    )
-                    sample.write_bytes_per_sec = (
-                        max(0, io.write_bytes - self._last_io.write_bytes) / interval_s
-                    )
+                io = psutil.disk_io_counters()
+                now = sample.timestamp
+                if io is not None and self._last_io is not None and self._last_io_time is not None:
+                    interval_s = max(0.0, now - self._last_io_time)
+                    if interval_s > 0:
+                        sample.read_bytes_per_sec = (
+                            max(0, io.read_bytes - self._last_io.read_bytes) / interval_s
+                        )
+                        sample.write_bytes_per_sec = (
+                            max(0, io.write_bytes - self._last_io.write_bytes) / interval_s
+                        )
 
-            self._last_io = io
-            self._last_io_time = now
+                self._last_io = io
+                self._last_io_time = now
+            else:
+                usage = shutil.disk_usage(self.mount_point)
+                sample.total_bytes = int(usage.total)
+                sample.used_bytes = int(usage.used)
+                sample.free_bytes = int(usage.free)
 
         except Exception:
             pass

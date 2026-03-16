@@ -38,17 +38,14 @@ class CPUCollector:
         """Collect a CPU sample."""
         sample = SystemCPUSample(timestamp=time.time())
 
-        if not self._psutil_available:
-            self._last_sample = sample
-            return sample
-
         try:
-            import psutil
+            if self._psutil_available:
+                import psutil
 
-            cpu_times = psutil.cpu_times_percent(interval=None)
-            sample.overall_percent = float(psutil.cpu_percent(interval=None))
-            sample.user_percent = float(getattr(cpu_times, "user", 0.0))
-            sample.system_percent = float(getattr(cpu_times, "system", 0.0))
+                cpu_times = psutil.cpu_times_percent(interval=None)
+                sample.overall_percent = float(psutil.cpu_percent(interval=None))
+                sample.user_percent = float(getattr(cpu_times, "user", 0.0))
+                sample.system_percent = float(getattr(cpu_times, "system", 0.0))
         except Exception:
             pass
 

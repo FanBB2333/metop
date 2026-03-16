@@ -5,6 +5,8 @@ This provides a real-time dashboard showing GPU, ANE, CPU, memory, disk,
 power, history, and top GPU processes with switchable display modes.
 """
 
+import os
+import re
 import select
 import sys
 import termios
@@ -13,7 +15,7 @@ import tty
 from typing import Optional, Union
 
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -35,12 +37,13 @@ from ..models import (
     GPUSample,
     MemorySample,
     PowerMetricsSample,
+    ProcessGPUUsage,
     SystemCPUSample,
     SystemInfo,
 )
 
 
-def format_bytes(bytes_val: Union[int, float]) -> str:
+def format_bytes(bytes_val: float) -> str:
     """Format bytes to human-readable string."""
     if bytes_val < 1024:
         return f"{bytes_val:.0f} B"
@@ -81,7 +84,7 @@ def get_utilization_color(value: float) -> str:
     return "red"
 
 
-def create_bar(value: float, width: int = 20, label: str = "") -> Text:
+def create_bar(value: float, width: int = 14, label: str = "") -> Text:
     """Create a colored progress bar."""
     filled = int(value / 100 * width)
     empty = width - filled
@@ -90,7 +93,7 @@ def create_bar(value: float, width: int = 20, label: str = "") -> Text:
 
     bar = Text()
     if label:
-        bar.append(f"{label:10} ")
+        bar.append(f"{label:7} ")
     bar.append("[")
     bar.append("█" * filled, style=color)
     bar.append("░" * empty, style="dim")
@@ -100,12 +103,17 @@ def create_bar(value: float, width: int = 20, label: str = "") -> Text:
 
 
 class InputController:
-    """Best-effort terminal input controller for runtime hotkeys."""
+    """Best-effort terminal input controller for runtime hotkeys and scrolling."""
+
+    _MOUSE_ENABLE = "\x1b[?1000h\x1b[?1006h"
+    _MOUSE_DISABLE = "\x1b[?1000l\x1b[?1006l"
+    _MOUSE_PATTERN = re.compile(r"^\x1b\[<(\d+);(\d+);(\d+)([Mm])")
 
     def __init__(self):
         self.enabled = False
         self._fd: Optional[int] = None
         self._saved_attrs = None
+        self._buffer = ""
 
     def __enter__(self):
         if not sys.stdin.isatty():
@@ -115,6 +123,8 @@ class InputController:
             self._fd = sys.stdin.fileno()
             self._saved_attrs = termios.tcgetattr(self._fd)
             tty.setcbreak(self._fd)
+            sys.stdout.write(self._MOUSE_ENABLE)
+            sys.stdout.flush()
             self.enabled = True
         except Exception:
             self.enabled = False
@@ -122,6 +132,13 @@ class InputController:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        if self.enabled:
+            try:
+                sys.stdout.write(self._MOUSE_DISABLE)
+                sys.stdout.flush()
+            except Exception:
+                pass
+
         if not self.enabled or self._fd is None or self._saved_attrs is None:
             return
 
@@ -130,22 +147,59 @@ class InputController:
         except Exception:
             pass
 
-    def read_pending(self) -> list[str]:
-        """Read all pending single-character inputs."""
-        if not self.enabled:
+    def read_events(self) -> list[str]:
+        """Read and parse all pending terminal input events."""
+        if not self.enabled or self._fd is None:
             return []
 
-        chars: list[str] = []
         try:
-            while select.select([sys.stdin], [], [], 0)[0]:
-                char = sys.stdin.read(1)
-                if not char:
+            while select.select([self._fd], [], [], 0)[0]:
+                chunk = os.read(self._fd, 4096).decode("utf-8", errors="ignore")
+                if not chunk:
                     break
-                chars.append(char)
+                self._buffer += chunk
         except Exception:
-            return chars
+            return []
 
-        return chars
+        events: list[str] = []
+        while self._buffer:
+            if self._buffer.startswith(("\x1b[A", "\x1bOA")):
+                events.append("up")
+                self._buffer = self._buffer[3:]
+                continue
+
+            if self._buffer.startswith(("\x1b[B", "\x1bOB")):
+                events.append("down")
+                self._buffer = self._buffer[3:]
+                continue
+
+            if self._buffer.startswith("\x1b[<"):
+                match = self._MOUSE_PATTERN.match(self._buffer)
+                if match is None:
+                    if "M" not in self._buffer and "m" not in self._buffer:
+                        break
+                    self._buffer = self._buffer[1:]
+                    continue
+
+                button_code = int(match.group(1))
+                if button_code == 64:
+                    events.append("wheel_up")
+                elif button_code == 65:
+                    events.append("wheel_down")
+
+                self._buffer = self._buffer[len(match.group(0)) :]
+                continue
+
+            if self._buffer[0] == "\x1b":
+                if len(self._buffer) == 1:
+                    break
+                self._buffer = self._buffer[1:]
+                continue
+
+            events.append(self._buffer[0])
+            self._buffer = self._buffer[1:]
+
+        return events
 
 
 class MetopApp:
@@ -165,15 +219,6 @@ class MetopApp:
         color_scheme: int = 0,
         display_mode: str = "stacked",
     ):
-        """
-        Initialize the TUI app.
-
-        Args:
-            interval_ms: Refresh interval in milliseconds
-            show_ane: Whether to show ANE metrics (requires sudo)
-            color_scheme: Color scheme index (0-8)
-            display_mode: Initial display mode
-        """
         self.interval_ms = interval_ms
         self.show_ane = show_ane and ANECollector.check_sudo()
         self.color_scheme = color_scheme
@@ -181,7 +226,6 @@ class MetopApp:
 
         self.console = Console()
 
-        # Initialize collectors
         self.gpu_collector = GPUCollector()
         self.system_collector = SystemCollector()
         self.memory_collector = MemoryCollector()
@@ -193,7 +237,6 @@ class MetopApp:
         else:
             self.ane_collector = None
 
-        # Cached data
         self.system_info: Optional[SystemInfo] = None
         self.last_gpu: Optional[GPUSample] = None
         self.last_ane: Optional[ANESample] = None
@@ -203,11 +246,14 @@ class MetopApp:
         self.last_disk: Optional[DiskSample] = None
         self.last_power: Optional[PowerMetricsSample] = None
 
-        # History for graphing
         self.gpu_history: list[float] = []
         self.ane_history: list[float] = []
         self.cpu_history: list[float] = []
         self.max_history = 60
+
+        self.selected_process_pid: Optional[int] = None
+        self.selected_process_index = 0
+        self.process_scroll_offset = 0
 
         self._input = InputController()
 
@@ -242,6 +288,66 @@ class MetopApp:
             if len(self.cpu_history) > self.max_history:
                 self.cpu_history.pop(0)
 
+        self._sync_process_selection()
+
+    def _sync_process_selection(self) -> None:
+        """Keep process selection stable across samples."""
+        processes = self.last_gpu.processes if self.last_gpu else []
+        if not processes:
+            self.selected_process_pid = None
+            self.selected_process_index = 0
+            self.process_scroll_offset = 0
+            return
+
+        if self.selected_process_pid is not None:
+            for index, process in enumerate(processes):
+                if process.pid == self.selected_process_pid:
+                    self.selected_process_index = index
+                    break
+            else:
+                self.selected_process_index = min(self.selected_process_index, len(processes) - 1)
+        else:
+            self.selected_process_index = min(self.selected_process_index, len(processes) - 1)
+
+        self.selected_process_pid = processes[self.selected_process_index].pid
+
+    def _move_process_selection(self, delta: int) -> None:
+        """Move the selected process up or down."""
+        processes = self.last_gpu.processes if self.last_gpu else []
+        if not processes:
+            return
+
+        next_index = self.selected_process_index + delta
+        self.selected_process_index = max(0, min(len(processes) - 1, next_index))
+        self.selected_process_pid = processes[self.selected_process_index].pid
+
+    def _visible_process_limit(self) -> int:
+        """Estimate how many process rows fit in the current process panel."""
+        total_height = max(18, self.console.size.height)
+        content_height = max(10, total_height - 7)
+        if self.display_mode == "stacked":
+            panel_height = max(12, int(content_height * 0.58))
+        else:
+            panel_height = max(8, int(content_height * 0.28))
+        return max(5, panel_height - 6)
+
+    def _visible_process_slice(self, limit: int) -> tuple[list[ProcessGPUUsage], int, int]:
+        """Return the visible process window and clamp scroll/selection."""
+        processes = self.last_gpu.processes if self.last_gpu else []
+        if not processes:
+            self.process_scroll_offset = 0
+            return [], 0, 0
+
+        max_offset = max(0, len(processes) - limit)
+        if self.selected_process_index < self.process_scroll_offset:
+            self.process_scroll_offset = self.selected_process_index
+        elif self.selected_process_index >= self.process_scroll_offset + limit:
+            self.process_scroll_offset = self.selected_process_index - limit + 1
+
+        self.process_scroll_offset = max(0, min(max_offset, self.process_scroll_offset))
+        end_index = min(len(processes), self.process_scroll_offset + limit)
+        return processes[self.process_scroll_offset:end_index], self.process_scroll_offset, end_index
+
     def _create_header(self) -> Panel:
         """Create header panel with system info."""
         if self.system_info is None:
@@ -264,186 +370,163 @@ class MetopApp:
 
         return Panel(header_text, title="metop", border_style="blue", box=box.ROUNDED)
 
-    def _create_gpu_panel(self) -> Panel:
-        """Create GPU utilization panel."""
+    def _create_accelerator_panel(self) -> Panel:
+        """Create combined GPU and ANE usage panel."""
         content = Text()
 
         if self.last_gpu:
             gpu = self.last_gpu
-            content.append_text(create_bar(gpu.device_utilization, width=18, label="Device"))
+            content.append_text(create_bar(gpu.device_utilization, label="GPU"))
             content.append("\n")
-            content.append_text(create_bar(gpu.renderer_utilization, width=18, label="Renderer"))
+            content.append(f"Render/Tiler {gpu.renderer_utilization:4.1f}% / {gpu.tiler_utilization:4.1f}%", style="dim")
             content.append("\n")
-            content.append_text(create_bar(gpu.tiler_utilization, width=18, label="Tiler"))
-            content.append("\n\n")
-            content.append("Memory: ", style="bold")
             content.append(
-                f"{format_bytes(gpu.memory_used_bytes)} / "
-                f"{format_bytes(gpu.memory_allocated_bytes)} allocated"
+                f"Mem {format_bytes(gpu.memory_used_bytes)} / "
+                f"{format_bytes(gpu.memory_allocated_bytes)}",
+                style="green",
             )
-            if gpu.tiled_scene_bytes > 0:
-                content.append(f"\nScene: {format_bytes(gpu.tiled_scene_bytes)}", style="dim")
-            if gpu.recovery_count > 0:
-                content.append(f"\nRecoveries: {gpu.recovery_count}", style="yellow")
+            if self.last_power and self.last_power.gpu_freq_mhz > 0:
+                content.append("\n")
+                content.append(
+                    f"GPU {self.last_power.gpu_freq_mhz:.0f} MHz", style="dim"
+                )
+                if self.last_power.gpu_active_residency > 0:
+                    content.append(
+                        f"  |  active {self.last_power.gpu_active_residency:.1f}%",
+                        style="dim",
+                    )
         else:
             content.append("No GPU data available", style="dim")
 
-        return Panel(content, title="GPU Usage", border_style="green", box=box.ROUNDED)
-
-    def _create_ane_panel(self) -> Panel:
-        """Create ANE utilization panel."""
-        content = Text()
-
+        content.append("\n\n")
         if not self.show_ane:
-            content.append("Run with ", style="dim")
-            content.append("sudo", style="bold yellow")
-            content.append(" to enable ANE + power metrics", style="dim")
+            content.append("ANE: sudo required", style="yellow")
         elif self.last_ane:
-            ane = self.last_ane
-            content.append_text(create_bar(ane.estimated_utilization, width=18, label="ANE"))
+            content.append_text(create_bar(self.last_ane.estimated_utilization, label="ANE"))
             if self.last_power and self.last_power.ane_freq_mhz > 0:
-                content.append("\n\nFreq: ", style="bold")
-                content.append(f"{self.last_power.ane_freq_mhz:.0f} MHz")
+                content.append("\n")
+                content.append(
+                    f"ANE {self.last_power.ane_freq_mhz:.0f} MHz", style="dim"
+                )
                 if self.last_power.ane_active_residency > 0:
                     content.append(
-                        f"  |  Active {self.last_power.ane_active_residency:.1f}%",
+                        f"  |  active {self.last_power.ane_active_residency:.1f}%",
                         style="dim",
                     )
-            if ane.energy_mj > 0:
-                content.append(f"\nEnergy: {ane.energy_mj:.1f} mJ/sample", style="dim")
         else:
-            content.append("Waiting for ANE data...", style="dim")
+            content.append("ANE: waiting for data...", style="dim")
 
-        return Panel(content, title="ANE Usage", border_style="magenta", box=box.ROUNDED)
-
-    def _create_power_panel(self) -> Panel:
-        """Create component power panel."""
-        content = Text()
-
-        if self.last_power:
-            power = self.last_power
-            rows = [
-                ("CPU", power.cpu_power_mw, "cyan"),
-                ("GPU", power.gpu_power_mw, "green"),
-            ]
-            if self.show_ane:
-                rows.append(("ANE", power.ane_power_mw, "magenta"))
-            if power.combined_power_mw > 0:
-                rows.append(("Total", power.combined_power_mw, "bold"))
-
-            for index, (label, value, style) in enumerate(rows):
-                if index:
-                    content.append("\n")
-                content.append(f"{label:5}", style=style)
-                content.append(" ")
-                content.append(format_power(value), style=style)
-
-            if power.gpu_freq_mhz > 0:
-                content.append("\n\nGPU Freq: ", style="bold")
-                content.append(f"{power.gpu_freq_mhz:.0f} MHz")
-                if power.gpu_active_residency > 0:
-                    content.append(f"  |  Active {power.gpu_active_residency:.1f}%", style="dim")
-
-            if self.show_ane and power.ane_freq_mhz > 0:
-                content.append("\nANE Freq: ", style="bold")
-                content.append(f"{power.ane_freq_mhz:.0f} MHz")
-                if power.ane_active_residency > 0:
-                    content.append(f"  |  Active {power.ane_active_residency:.1f}%", style="dim")
-        elif self.show_ane:
-            content.append("Waiting for powermetrics power data...", style="dim")
-        else:
-            content.append("Run with sudo to enable component power metrics", style="dim")
-
-        return Panel(content, title="Power", border_style="cyan", box=box.ROUNDED)
+        return Panel(content, title="GPU / ANE Usage", border_style="green", box=box.ROUNDED)
 
     def _create_cpu_panel(self) -> Panel:
-        """Create CPU panel."""
+        """Create compact CPU panel."""
         content = Text()
 
         if self.last_system_cpu:
             cpu = self.last_system_cpu
-            content.append_text(create_bar(cpu.overall_percent, width=16, label="CPU"))
-            content.append("\n\n")
-            content.append(f"User {cpu.user_percent:.1f}%", style="cyan")
-            content.append("  |  ", style="dim")
-            content.append(f"System {cpu.system_percent:.1f}%", style="yellow")
-            content.append("\nLoad: ", style="bold")
+            content.append_text(create_bar(cpu.overall_percent, label="CPU"))
+            content.append("\n")
             content.append(
-                f"{cpu.load_avg_1m:.2f} / {cpu.load_avg_5m:.2f} / {cpu.load_avg_15m:.2f}"
+                f"User/System {cpu.user_percent:.1f}% / {cpu.system_percent:.1f}%",
+                style="dim",
+            )
+            content.append("\n")
+            content.append(
+                f"Load {cpu.load_avg_1m:.2f} / {cpu.load_avg_5m:.2f} / {cpu.load_avg_15m:.2f}"
             )
 
             if self.last_cpu:
-                content.append("\n\n")
-                content.append_text(create_bar(self.last_cpu.e_cluster_active, width=12, label="E Cluster"))
                 content.append("\n")
-                content.append_text(create_bar(self.last_cpu.p_cluster_active, width=12, label="P Cluster"))
+                content.append(
+                    f"E/P {self.last_cpu.e_cluster_active:.1f}% / {self.last_cpu.p_cluster_active:.1f}%",
+                    style="dim",
+                )
                 if self.last_cpu.e_cluster_freq_mhz > 0 or self.last_cpu.p_cluster_freq_mhz > 0:
-                    content.append("\n\n")
                     content.append(
-                        f"E {self.last_cpu.e_cluster_freq_mhz} MHz", style="green"
-                    )
-                    content.append("  |  ", style="dim")
-                    content.append(
-                        f"P {self.last_cpu.p_cluster_freq_mhz} MHz", style="orange1"
+                        f"  |  {self.last_cpu.e_cluster_freq_mhz}/{self.last_cpu.p_cluster_freq_mhz} MHz",
+                        style="dim",
                     )
         else:
             content.append("No CPU data available", style="dim")
 
         return Panel(content, title="CPU", border_style="cyan", box=box.ROUNDED)
 
+    def _create_power_panel(self) -> Panel:
+        """Create compact power panel."""
+        content = Text()
+
+        if self.last_power:
+            power = self.last_power
+            content.append(f"CPU   {format_power(power.cpu_power_mw)}", style="cyan")
+            content.append("\n")
+            content.append(f"GPU   {format_power(power.gpu_power_mw)}", style="green")
+            if self.show_ane:
+                content.append("\n")
+                content.append(f"ANE   {format_power(power.ane_power_mw)}", style="magenta")
+            if power.combined_power_mw > 0:
+                content.append("\n")
+                content.append(f"Total {format_power(power.combined_power_mw)}", style="bold")
+        elif self.show_ane:
+            content.append("Waiting for power data...", style="dim")
+        else:
+            content.append("Power: sudo required", style="yellow")
+
+        return Panel(content, title="Power", border_style="cyan", box=box.ROUNDED)
+
     def _create_memory_panel(self) -> Panel:
-        """Create system memory panel."""
+        """Create compact memory panel."""
         content = Text()
 
         if self.last_memory:
             mem = self.last_memory
             effective_used = mem.total_bytes - mem.available_bytes
-            content.append_text(create_bar(mem.usage_percent, width=16, label="RAM"))
-            content.append("\n\n")
-            content.append(f"{format_bytes(effective_used)}", style="bold")
-            content.append(f" / {format_bytes(mem.total_bytes)}")
-            content.append("\nAvailable: ", style="bold")
-            content.append(f"{format_bytes(mem.available_bytes)}", style="green")
+            content.append_text(create_bar(mem.usage_percent, width=10, label="RAM"))
+            content.append("\n")
+            content.append(
+                f"{format_bytes(effective_used)} / {format_bytes(mem.total_bytes)}",
+                style="bold",
+            )
+            content.append(f"  |  avail {format_bytes(mem.available_bytes)}", style="green")
             if mem.swap_total_bytes > 0:
-                swap_pct = (mem.swap_used_bytes / mem.swap_total_bytes) * 100
-                content.append("\nSwap: ", style="bold")
+                content.append("\n")
                 content.append(
-                    f"{format_bytes(mem.swap_used_bytes)} / {format_bytes(mem.swap_total_bytes)}"
+                    f"Swap {format_bytes(mem.swap_used_bytes)} / {format_bytes(mem.swap_total_bytes)}",
+                    style="dim",
                 )
-                content.append(f" ({swap_pct:.1f}%)", style="dim")
         else:
             content.append("No memory data available", style="dim")
 
         return Panel(content, title="Memory", border_style="yellow", box=box.ROUNDED)
 
     def _create_disk_panel(self) -> Panel:
-        """Create disk panel."""
+        """Create compact disk panel."""
         content = Text()
 
         if self.last_disk:
             disk = self.last_disk
-            content.append_text(create_bar(disk.usage_percent, width=16, label="Disk"))
-            content.append("\n\n")
-            content.append(f"{format_bytes(disk.used_bytes)}", style="bold")
-            content.append(f" / {format_bytes(disk.total_bytes)}")
-            content.append("\nFree: ", style="bold")
-            content.append(f"{format_bytes(disk.free_bytes)}", style="green")
-            content.append("\nRead: ", style="bold")
-            content.append(format_rate(disk.read_bytes_per_sec))
-            content.append("\nWrite: ", style="bold")
-            content.append(format_rate(disk.write_bytes_per_sec))
+            content.append_text(create_bar(disk.usage_percent, width=10, label="Disk"))
+            content.append("\n")
+            content.append(
+                f"{format_bytes(disk.used_bytes)} / {format_bytes(disk.total_bytes)}",
+                style="bold",
+            )
+            content.append(f"  |  free {format_bytes(disk.free_bytes)}", style="green")
+            content.append("\n")
+            content.append(
+                f"R {format_rate(disk.read_bytes_per_sec)}  |  W {format_rate(disk.write_bytes_per_sec)}",
+                style="dim",
+            )
         else:
             content.append("No disk data available", style="dim")
 
         return Panel(content, title="Disk", border_style="blue", box=box.ROUNDED)
 
-    def _create_sparkline(self, history: list[float], width: int = 28) -> str:
+    def _create_sparkline(self, history: list[float], width: int = 22) -> str:
         """Create a sparkline from history data."""
         if not history:
             return "─" * width
 
         blocks = "▁▂▃▄▅▆▇█"
-
         if len(history) < width:
             sampled = history + [history[-1]] * (width - len(history))
         else:
@@ -452,27 +535,26 @@ class MetopApp:
 
         result = ""
         for val in sampled:
-            idx = int(val / 100 * (len(blocks) - 1))
-            idx = max(0, min(len(blocks) - 1, idx))
-            result += blocks[idx]
-
+            index = int(val / 100 * (len(blocks) - 1))
+            index = max(0, min(len(blocks) - 1, index))
+            result += blocks[index]
         return result
 
     def _create_history_panel(self) -> Panel:
-        """Create history panel."""
+        """Create compact history panel."""
         content = Text()
-        content.append("GPU: ", style="green")
+        content.append("GPU ", style="green")
         content.append(self._create_sparkline(self.gpu_history))
-        content.append("\nCPU: ", style="cyan")
+        content.append("\nCPU ", style="cyan")
         content.append(self._create_sparkline(self.cpu_history))
         if self.show_ane:
-            content.append("\nANE: ", style="magenta")
+            content.append("\nANE ", style="magenta")
             content.append(self._create_sparkline(self.ane_history))
 
         return Panel(content, title="History", border_style="dim", box=box.ROUNDED)
 
-    def _create_process_table(self, limit: int = 8) -> Union[Table, Text]:
-        """Create a top-process view from the latest GPU sample."""
+    def _create_process_table(self, limit: int) -> Union[Table, Text]:
+        """Create a selectable, scrollable process table."""
         if len(self.gpu_history) < 2:
             return Text("Collecting per-process GPU deltas...", style="dim")
 
@@ -482,37 +564,94 @@ class MetopApp:
                 style="dim",
             )
 
+        visible_processes, start_index, _ = self._visible_process_slice(limit)
+
         table = Table(box=None, expand=True, pad_edge=False, show_header=True)
-        table.add_column("Process", overflow="ellipsis")
-        table.add_column("API", width=10, no_wrap=True)
-        table.add_column("Queues", justify="right", width=6, no_wrap=True)
+        table.add_column("", width=2, no_wrap=True)
+        table.add_column("Process", overflow="ellipsis", ratio=3)
         table.add_column("GPU %", justify="right", width=8, no_wrap=True)
         table.add_column("GPU Time", justify="right", width=10, no_wrap=True)
+        table.add_column("CPU %", justify="right", width=8, no_wrap=True)
+        table.add_column("RSS", justify="right", width=10, no_wrap=True)
+        table.add_column("Thr", justify="right", width=5, no_wrap=True)
+        table.add_column("API", width=10, no_wrap=True)
+        table.add_column("Q", justify="right", width=3, no_wrap=True)
+        table.add_column("State", width=10, no_wrap=True)
         table.add_column("PID", justify="right", width=7, no_wrap=True)
 
-        for process in self.last_gpu.processes[:limit]:
-            percent = Text(
+        for row_index, process in enumerate(visible_processes, start=start_index):
+            is_selected = row_index == self.selected_process_index
+            marker = Text("▶", style="bold cyan") if is_selected else Text(" ")
+            gpu_percent = Text(
                 f"{process.gpu_percent:5.1f}%",
                 style=get_utilization_color(min(process.gpu_percent, 100.0)),
             )
+            cpu_percent = Text(f"{process.cpu_percent:5.1f}%", style="cyan")
+            row_style = "bold black on bright_cyan" if is_selected else ""
+
             table.add_row(
+                marker,
                 process.name,
+                gpu_percent,
+                format_duration_ms(process.gpu_time_ms),
+                cpu_percent,
+                format_bytes(process.memory_rss_bytes) if process.memory_rss_bytes > 0 else "-",
+                str(process.thread_count) if process.thread_count > 0 else "-",
                 process.api or "-",
                 str(process.command_queue_count),
-                percent,
-                format_duration_ms(process.gpu_time_ms),
+                process.status or "-",
                 str(process.pid),
+                style=row_style,
             )
 
         return table
 
+    def _create_process_details(self, visible_start: int, visible_end: int) -> Text:
+        """Create selected-process detail line."""
+        details = Text()
+        processes = self.last_gpu.processes if self.last_gpu else []
+        if not processes:
+            details.append("No selected process", style="dim")
+            return details
+
+        selected = processes[self.selected_process_index]
+        details.append("Selected: ", style="bold")
+        details.append(selected.name, style="bold cyan")
+        details.append(f"  |  pid {selected.pid}", style="dim")
+        if selected.status:
+            details.append(f"  |  {selected.status}", style="dim")
+        details.append(
+            f"  |  GPU {selected.gpu_percent:.1f}% / {format_duration_ms(selected.gpu_time_ms)}"
+        )
+        details.append(f"  |  CPU {selected.cpu_percent:.1f}%", style="cyan")
+        if selected.memory_rss_bytes > 0:
+            details.append(f"  |  RSS {format_bytes(selected.memory_rss_bytes)}", style="dim")
+        if selected.thread_count > 0:
+            details.append(f"  |  threads {selected.thread_count}", style="dim")
+        details.append(f"  |  API {selected.api or '-'}", style="dim")
+        details.append(f"  |  queues {selected.command_queue_count}", style="dim")
+
+        details.append("\n", style="dim")
+        details.append(
+            f"Visible {visible_start + 1}-{visible_end} / {len(processes)}",
+            style="dim",
+        )
+        details.append("  |  ↑/↓ select  |  mouse wheel scroll", style="dim")
+        return details
+
     def _create_process_panel(self) -> Panel:
-        """Create top GPU processes panel."""
+        """Create top GPU process panel with selection and detail view."""
+        limit = self._visible_process_limit()
+        table = self._create_process_table(limit)
+        _, start_index, end_index = self._visible_process_slice(limit)
+        details = self._create_process_details(start_index, end_index)
+        content = Group(table, Text(""), details)
         return Panel(
-            self._create_process_table(limit=10),
+            content,
             title="Top GPU Processes",
             border_style="white",
             box=box.ROUNDED,
+            padding=(0, 1),
         )
 
     def _create_stacked_layout(self) -> Layout:
@@ -525,22 +664,21 @@ class MetopApp:
         )
 
         layout["content"].split_column(
-            Layout(name="top", ratio=3),
-            Layout(name="middle", ratio=3),
-            Layout(name="bottom", ratio=2),
+            Layout(name="top", ratio=4),
+            Layout(name="middle", ratio=2),
+            Layout(name="bottom", ratio=7),
         )
 
         layout["top"].split_row(
-            Layout(name="gpu", ratio=3),
-            Layout(name="ane", ratio=3),
+            Layout(name="accelerators", ratio=4),
+            Layout(name="cpu", ratio=3),
             Layout(name="power", ratio=2),
         )
 
         layout["middle"].split_row(
-            Layout(name="cpu", ratio=2),
-            Layout(name="memory", ratio=2),
-            Layout(name="disk", ratio=2),
-            Layout(name="history", ratio=2),
+            Layout(name="memory", ratio=3),
+            Layout(name="disk", ratio=3),
+            Layout(name="history", ratio=4),
         )
 
         return layout
@@ -560,31 +698,19 @@ class MetopApp:
         )
 
         layout["left"].split_column(
-            Layout(name="gpu"),
+            Layout(name="accelerators"),
             Layout(name="cpu"),
             Layout(name="memory"),
         )
 
         layout["right"].split_column(
-            Layout(name="ane"),
             Layout(name="power"),
             Layout(name="disk"),
             Layout(name="history"),
-            Layout(name="processes"),
+            Layout(name="processes", ratio=2),
         )
 
         return layout
-
-    def _apply_common_updates(self, layout: Layout) -> None:
-        """Render shared panels into a prepared layout."""
-        layout["header"].update(self._create_header())
-        layout["gpu"].update(self._create_gpu_panel())
-        layout["ane"].update(self._create_ane_panel())
-        layout["power"].update(self._create_power_panel())
-        layout["cpu"].update(self._create_cpu_panel())
-        layout["memory"].update(self._create_memory_panel())
-        layout["disk"].update(self._create_disk_panel())
-        layout["history"].update(self._create_history_panel())
 
     def _mode_label(self) -> str:
         """Get the current display mode label."""
@@ -593,19 +719,27 @@ class MetopApp:
     def _toggle_display_mode(self) -> None:
         """Cycle to the next display mode."""
         current_index = self.DISPLAY_MODES.index(self.display_mode)
-        next_index = (current_index + 1) % len(self.DISPLAY_MODES)
-        self.display_mode = self.DISPLAY_MODES[next_index]
+        self.display_mode = self.DISPLAY_MODES[(current_index + 1) % len(self.DISPLAY_MODES)]
+        self.process_scroll_offset = 0
 
     def _handle_input(self) -> None:
-        """Handle pending keyboard input."""
-        for char in self._input.read_pending():
-            lowered = char.lower()
+        """Handle pending keyboard and mouse input."""
+        for event in self._input.read_events():
+            lowered = event.lower()
             if lowered == "m":
                 self._toggle_display_mode()
-            elif char == "1":
+            elif event == "1":
                 self.display_mode = "stacked"
-            elif char == "2":
+            elif event == "2":
                 self.display_mode = "classic"
+            elif event in ("up", "k"):
+                self._move_process_selection(-1)
+            elif event in ("down", "j"):
+                self._move_process_selection(1)
+            elif event == "wheel_up":
+                self._move_process_selection(-1)
+            elif event == "wheel_down":
+                self._move_process_selection(1)
 
     def _render(self) -> Layout:
         """Render the current state."""
@@ -613,11 +747,23 @@ class MetopApp:
 
         if self.display_mode == "stacked":
             layout = self._create_stacked_layout()
-            self._apply_common_updates(layout)
+            layout["header"].update(self._create_header())
+            layout["accelerators"].update(self._create_accelerator_panel())
+            layout["cpu"].update(self._create_cpu_panel())
+            layout["power"].update(self._create_power_panel())
+            layout["memory"].update(self._create_memory_panel())
+            layout["disk"].update(self._create_disk_panel())
+            layout["history"].update(self._create_history_panel())
             layout["bottom"].update(self._create_process_panel())
         else:
             layout = self._create_classic_layout()
-            self._apply_common_updates(layout)
+            layout["header"].update(self._create_header())
+            layout["accelerators"].update(self._create_accelerator_panel())
+            layout["cpu"].update(self._create_cpu_panel())
+            layout["memory"].update(self._create_memory_panel())
+            layout["power"].update(self._create_power_panel())
+            layout["disk"].update(self._create_disk_panel())
+            layout["history"].update(self._create_history_panel())
             layout["processes"].update(self._create_process_panel())
 
         footer_text = Text()
@@ -625,17 +771,16 @@ class MetopApp:
         footer_text.append(" exit  |  ", style="dim")
         footer_text.append("m", style="bold")
         footer_text.append(" switch layout  |  ", style="dim")
-        footer_text.append("1", style="bold")
-        footer_text.append(" stacked  ", style="dim")
-        footer_text.append("2", style="bold")
-        footer_text.append(" classic  |  ", style="dim")
+        footer_text.append("↑/↓", style="bold")
+        footer_text.append(" select process  |  ", style="dim")
+        footer_text.append("wheel", style="bold")
+        footer_text.append(" scroll list  |  ", style="dim")
         footer_text.append(f"Layout: {self._mode_label()}", style="cyan")
         footer_text.append(f"  |  Refresh: {self.interval_ms}ms", style="dim")
         if not self._input.enabled:
-            footer_text.append("  |  layout hotkeys unavailable", style="yellow")
+            footer_text.append("  |  input hotkeys unavailable", style="yellow")
 
         layout["footer"].update(Panel(footer_text, box=box.ROUNDED))
-
         return layout
 
     def run(self) -> None:
