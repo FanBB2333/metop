@@ -10,15 +10,24 @@ A Python-based GPU/ANE monitoring tool for Apple Silicon Macs. Like `nvtop` or `
   - Top GPU-active processes from AGX user client GPU time deltas
   - Real-time sparkline history
 
+- **System Monitoring**
+  - CPU usage and load average
+  - Memory usage and swap
+  - Disk usage and read/write throughput
+
 - **ANE + Power Metrics** (requires sudo / `powermetrics`)
   - CPU/GPU/ANE/Total power (mW/W)
   - GPU/ANE frequency and active/idle residency (when available)
   - ANE utilization estimated from residency (fallback: power-based)
-  
+
+- **Display Modes**
+  - Default stacked layout: top for GPU/ANE/power, middle for CPU/memory/disk/history, bottom for top GPU processes
+  - Runtime switching with `m` (`1` for stacked, `2` for classic)
+
 - **System Info**
   - Chip detection (M1/M2/M3/M4 series)
   - CPU/GPU/ANE core counts
-  - Memory usage and swap
+  - Total memory
 
 ## Installation
 
@@ -44,6 +53,9 @@ metop -i 500
 
 # Disable ANE/powermetrics even with sudo
 metop --no-ane
+
+# Start in the classic layout
+metop --layout classic
 
 # Debug mode (single sample, raw output)
 metop --debug

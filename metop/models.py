@@ -48,6 +48,19 @@ class CPUSample:
 
 
 @dataclass
+class SystemCPUSample:
+    """System-wide CPU metrics from psutil."""
+
+    overall_percent: float = 0.0
+    user_percent: float = 0.0
+    system_percent: float = 0.0
+    load_avg_1m: float = 0.0
+    load_avg_5m: float = 0.0
+    load_avg_15m: float = 0.0
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
 class PowerMetricsSample:
     """Power/frequency metrics from powermetrics (requires sudo)."""
 
@@ -93,6 +106,26 @@ class MemorySample:
 
 
 @dataclass
+class DiskSample:
+    """Filesystem usage and disk throughput metrics."""
+
+    mount_point: str = "/"
+    total_bytes: int = 0
+    used_bytes: int = 0
+    free_bytes: int = 0
+    read_bytes_per_sec: float = 0.0
+    write_bytes_per_sec: float = 0.0
+    timestamp: float = field(default_factory=time.time)
+
+    @property
+    def usage_percent(self) -> float:
+        """Calculate disk usage percentage."""
+        if self.total_bytes == 0:
+            return 0.0
+        return (self.used_bytes / self.total_bytes) * 100
+
+
+@dataclass
 class ProcessGPUUsage:
     """Per-process GPU usage information."""
     
@@ -127,7 +160,9 @@ class CombinedSample:
     gpu: Optional[GPUSample] = None
     ane: Optional[ANESample] = None
     cpu: Optional[CPUSample] = None
+    system_cpu: Optional[SystemCPUSample] = None
     power: Optional[PowerMetricsSample] = None
     memory: Optional[MemorySample] = None
+    disk: Optional[DiskSample] = None
     processes: List[ProcessGPUUsage] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)

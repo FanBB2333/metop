@@ -61,6 +61,14 @@ For bug reports and contributions:
         metavar="N",
         help="Color scheme (0-8, default: 0)"
     )
+
+    parser.add_argument(
+        "--layout",
+        type=str,
+        default="stacked",
+        choices=("stacked", "classic"),
+        help="Initial display layout (default: stacked)"
+    )
     
     parser.add_argument(
         "-v", "--version",
@@ -88,7 +96,14 @@ For bug reports and contributions:
     
     # Debug mode: print raw data instead of TUI
     if args.debug:
-        from .collectors import GPUCollector, ANECollector, SystemCollector, MemoryCollector
+        from .collectors import (
+            ANECollector,
+            CPUCollector,
+            DiskCollector,
+            GPUCollector,
+            MemoryCollector,
+            SystemCollector,
+        )
         
         print("=== System Info ===")
         sys_collector = SystemCollector()
@@ -132,6 +147,27 @@ For bug reports and contributions:
         print(f"Available: {mem.available_bytes / (1024**3):.2f} GB")
         print(f"Usage: {mem.usage_percent:.1f}%")
         print()
+
+        print("=== CPU Sample ===")
+        cpu_collector = CPUCollector()
+        cpu = cpu_collector.sample()
+        print(f"CPU Usage: {cpu.overall_percent:.1f}%")
+        print(f"User/System: {cpu.user_percent:.1f}% / {cpu.system_percent:.1f}%")
+        print(
+            f"Load Avg: {cpu.load_avg_1m:.2f} / "
+            f"{cpu.load_avg_5m:.2f} / {cpu.load_avg_15m:.2f}"
+        )
+        print()
+
+        print("=== Disk Sample ===")
+        disk_collector = DiskCollector()
+        disk_collector.sample()
+        time.sleep(0.2)
+        disk = disk_collector.sample()
+        print(f"Used: {disk.used_bytes / (1024**3):.2f} GB / {disk.total_bytes / (1024**3):.2f} GB")
+        print(f"Read: {disk.read_bytes_per_sec / (1024**2):.2f} MB/s")
+        print(f"Write: {disk.write_bytes_per_sec / (1024**2):.2f} MB/s")
+        print()
         
         if ANECollector.check_sudo():
             print("=== ANE Sample (requires waiting for interval) ===")
@@ -155,7 +191,8 @@ For bug reports and contributions:
         app = MetopApp(
             interval_ms=args.interval,
             show_ane=not args.no_ane,
-            color_scheme=args.color
+            color_scheme=args.color,
+            display_mode=args.layout,
         )
         app.run()
         return 0
