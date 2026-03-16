@@ -184,10 +184,15 @@ class InputController:
                     continue
 
                 button_code = int(match.group(1))
+                x = int(match.group(2))
+                y = int(match.group(3))
+                action = match.group(4)
                 if button_code == 64:
                     events.append("wheel_up")
                 elif button_code == 65:
                     events.append("wheel_down")
+                elif action == "M" and button_code in (0, 32):
+                    events.append(f"left_click:{x}:{y}")
 
                 self._buffer = self._buffer[len(match.group(0)) :]
                 continue
@@ -394,13 +399,54 @@ class MetopApp:
 
     def _visible_process_limit(self) -> int:
         """Estimate how many process rows fit in the current process panel."""
+        _, _, _, panel_height = self._process_panel_region()
+        content_height = max(1, panel_height - 2)
+        return max(1, content_height - 2)
+
+    def _split_lengths(self, total: int, ratios: list[int]) -> list[int]:
+        """Split an integer extent by ratios while preserving the total."""
+        if total <= 0:
+            return [0] * len(ratios)
+
+        ratio_total = sum(max(0, ratio) for ratio in ratios)
+        if ratio_total <= 0:
+            return [0] * len(ratios)
+
+        lengths = [total * ratio // ratio_total for ratio in ratios]
+        remainder = total - sum(lengths)
+        if remainder > 0:
+            order = sorted(
+                range(len(ratios)),
+                key=lambda index: ((total * ratios[index]) % ratio_total, ratios[index]),
+                reverse=True,
+            )
+            for index in order[:remainder]:
+                lengths[index] += 1
+
+        return lengths
+
+    def _process_panel_region(self) -> tuple[int, int, int, int]:
+        """Return the process panel region as 1-based x/y with width/height."""
+        total_width = max(20, self.console.size.width)
         total_height = max(18, self.console.size.height)
-        content_height = max(10, total_height - 7)
+        header_height = 3
+        footer_height = 4
+        body_height = max(1, total_height - header_height - footer_height)
+
         if self.display_mode == "stacked":
-            panel_height = max(12, int(content_height * 0.58))
-        else:
-            panel_height = max(8, int(content_height * 0.28))
-        return max(5, panel_height - 4)
+            top_height, middle_height, bottom_height = self._split_lengths(body_height, [4, 2, 7])
+            return (1, 1 + header_height + top_height + middle_height, total_width, bottom_height)
+
+        left_width, right_width = self._split_lengths(total_width, [1, 1])
+        power_height, disk_height, history_height, process_height = self._split_lengths(
+            body_height, [1, 1, 1, 2]
+        )
+        return (
+            1 + left_width,
+            1 + header_height + power_height + disk_height + history_height,
+            right_width,
+            process_height,
+        )
 
     def _visible_process_slice(self, limit: int) -> tuple[list[ProcessGPUUsage], int, int]:
         """Return the visible process window and clamp scroll/selection."""
@@ -746,9 +792,17 @@ class MetopApp:
         """Create top GPU process panel with selection and detail view."""
         limit = self._visible_process_limit()
         table = self._create_process_table(limit)
-        _, start_index, end_index = self._visible_process_slice(limit)
+        visible_processes, start_index, end_index = self._visible_process_slice(limit)
         details = self._create_process_details(start_index, end_index)
-        content = Group(table, details)
+        _, _, _, panel_height = self._process_panel_region()
+        content_height = max(1, panel_height - 2)
+        table_height = 1
+        if len(self.gpu_history) >= 2 and self.last_gpu and self.last_gpu.processes:
+            table_height = 1 + len(visible_processes)
+
+        spacer_lines = max(0, content_height - table_height - 1)
+        spacer = [Text(" ", no_wrap=True) for _ in range(spacer_lines)]
+        content = Group(table, *spacer, details)
         return Panel(
             content,
             title="Top GPU Processes",
@@ -756,6 +810,37 @@ class MetopApp:
             box=box.ROUNDED,
             padding=(0, 1),
         )
+
+    def _select_process_from_click(self, x: int, y: int) -> bool:
+        """Select the process row at the given terminal coordinates."""
+        if len(self.gpu_history) < 2 or not self.last_gpu or not self.last_gpu.processes:
+            return False
+
+        panel_x, panel_y, panel_width, panel_height = self._process_panel_region()
+        if not (
+            panel_x <= x <= panel_x + panel_width - 1
+            and panel_y <= y <= panel_y + panel_height - 1
+        ):
+            return False
+
+        limit = self._visible_process_limit()
+        visible_processes, start_index, _ = self._visible_process_slice(limit)
+        if not visible_processes:
+            return False
+
+        data_start_y = panel_y + 2
+        data_end_y = data_start_y + len(visible_processes) - 1
+        if not (data_start_y <= y <= data_end_y):
+            return False
+
+        clicked_index = start_index + (y - data_start_y)
+        processes = self.last_gpu.processes
+        if not (0 <= clicked_index < len(processes)):
+            return False
+
+        self.selected_process_index = clicked_index
+        self.selected_process_pid = processes[clicked_index].pid
+        return True
 
     def _create_stacked_layout(self) -> Layout:
         """Create the default stacked layout."""
@@ -830,6 +915,11 @@ class MetopApp:
         state_changed = False
 
         for event in self._input.read_events():
+            if event.startswith("left_click:"):
+                _, x_text, y_text = event.split(":", 2)
+                state_changed = self._select_process_from_click(int(x_text), int(y_text)) or state_changed
+                continue
+
             lowered = event.lower()
             if lowered == "m":
                 self._toggle_display_mode()
@@ -885,6 +975,8 @@ class MetopApp:
         footer_text.append(" switch layout  |  ", style="dim")
         footer_text.append("↑/↓", style="bold")
         footer_text.append(" select process  |  ", style="dim")
+        footer_text.append("click", style="bold")
+        footer_text.append(" select  |  ", style="dim")
         footer_text.append("wheel", style="bold")
         footer_text.append(" scroll list  |  ", style="dim")
         footer_text.append(f"Layout: {self._mode_label()}", style="cyan")
