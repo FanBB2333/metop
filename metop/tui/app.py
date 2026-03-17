@@ -17,6 +17,7 @@ import tty
 from typing import Optional, Union
 
 from rich import box
+from rich.align import Align
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
@@ -86,7 +87,7 @@ def get_utilization_color(value: float) -> str:
     return "red"
 
 
-def create_bar(value: float, width: int = 14, label: str = "") -> Text:
+def create_bar(value: float, width: int = 24, label: str = "") -> Text:
     """Create a colored progress bar."""
     filled = int(value / 100 * width)
     empty = width - filled
@@ -489,21 +490,21 @@ class MetopApp:
 
     def _create_accelerator_panel(self) -> Panel:
         """Create combined GPU and ANE usage panel."""
-        content = Text()
+        content = Text(justify="center")
 
         if self.last_gpu:
             gpu = self.last_gpu
             content.append_text(create_bar(gpu.device_utilization, label="GPU"))
-            content.append("\n")
+            content.append("\n\n")
             content.append(f"Render/Tiler {gpu.renderer_utilization:4.1f}% / {gpu.tiler_utilization:4.1f}%", style="dim")
-            content.append("\n")
+            content.append("\n\n")
             content.append(
                 f"Mem {format_bytes(gpu.memory_used_bytes)} / "
                 f"{format_bytes(gpu.memory_allocated_bytes)}",
                 style="green",
             )
             if self.last_power and self.last_power.gpu_freq_mhz > 0:
-                content.append("\n")
+                content.append("\n\n")
                 content.append(
                     f"GPU {self.last_power.gpu_freq_mhz:.0f} MHz", style="dim"
                 )
@@ -515,13 +516,13 @@ class MetopApp:
         else:
             content.append("No GPU data available", style="dim")
 
-        content.append("\n\n")
+        content.append("\n\n\n")
         if not self.show_ane:
             content.append("ANE: sudo required", style="yellow")
         elif self.last_ane:
             content.append_text(create_bar(self.last_ane.estimated_utilization, label="ANE"))
             if self.last_power and self.last_power.ane_freq_mhz > 0:
-                content.append("\n")
+                content.append("\n\n")
                 content.append(
                     f"ANE {self.last_power.ane_freq_mhz:.0f} MHz", style="dim"
                 )
@@ -533,27 +534,32 @@ class MetopApp:
         else:
             content.append("ANE: waiting for data...", style="dim")
 
-        return Panel(content, title="GPU / ANE Usage", border_style="green", box=box.ROUNDED)
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="GPU / ANE Usage",
+            border_style="green",
+            box=box.ROUNDED,
+        )
 
     def _create_cpu_panel(self) -> Panel:
         """Create compact CPU panel."""
-        content = Text()
+        content = Text(justify="center")
 
         if self.last_system_cpu:
             cpu = self.last_system_cpu
             content.append_text(create_bar(cpu.overall_percent, label="CPU"))
-            content.append("\n")
+            content.append("\n\n")
             content.append(
                 f"User/System {cpu.user_percent:.1f}% / {cpu.system_percent:.1f}%",
                 style="dim",
             )
-            content.append("\n")
+            content.append("\n\n")
             content.append(
                 f"Load {cpu.load_avg_1m:.2f} / {cpu.load_avg_5m:.2f} / {cpu.load_avg_15m:.2f}"
             )
 
             if self.last_cpu:
-                content.append("\n")
+                content.append("\n\n")
                 content.append(
                     f"E/P {self.last_cpu.e_cluster_active:.1f}% / {self.last_cpu.p_cluster_active:.1f}%",
                     style="dim",
@@ -566,46 +572,56 @@ class MetopApp:
         else:
             content.append("No CPU data available", style="dim")
 
-        return Panel(content, title="CPU", border_style="cyan", box=box.ROUNDED)
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="CPU",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
 
     def _create_power_panel(self) -> Panel:
         """Create compact power panel."""
-        content = Text()
+        content = Text(justify="center")
 
         if self.last_power:
             power = self.last_power
             content.append(f"CPU   {format_power(power.cpu_power_mw)}", style="cyan")
-            content.append("\n")
+            content.append("\n\n")
             content.append(f"GPU   {format_power(power.gpu_power_mw)}", style="green")
             if self.show_ane:
-                content.append("\n")
+                content.append("\n\n")
                 content.append(f"ANE   {format_power(power.ane_power_mw)}", style="magenta")
             if power.combined_power_mw > 0:
-                content.append("\n")
+                content.append("\n\n")
                 content.append(f"Total {format_power(power.combined_power_mw)}", style="bold")
         elif self.show_ane:
             content.append("Waiting for power data...", style="dim")
         else:
             content.append("Power: sudo required", style="yellow")
 
-        return Panel(content, title="Power", border_style="cyan", box=box.ROUNDED)
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="Power",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
 
     def _create_memory_panel(self) -> Panel:
         """Create compact memory panel."""
-        content = Text()
+        content = Text(justify="center")
 
         if self.last_memory:
             mem = self.last_memory
             effective_used = mem.total_bytes - mem.available_bytes
-            content.append_text(create_bar(mem.usage_percent, width=10, label="RAM"))
-            content.append("\n")
+            content.append_text(create_bar(mem.usage_percent, width=16, label="RAM"))
+            content.append("\n\n")
             content.append(
                 f"{format_bytes(effective_used)} / {format_bytes(mem.total_bytes)}",
                 style="bold",
             )
             content.append(f"  |  avail {format_bytes(mem.available_bytes)}", style="green")
             if mem.swap_total_bytes > 0:
-                content.append("\n")
+                content.append("\n\n")
                 content.append(
                     f"Swap {format_bytes(mem.swap_used_bytes)} / {format_bytes(mem.swap_total_bytes)}",
                     style="dim",
@@ -613,16 +629,21 @@ class MetopApp:
         else:
             content.append("No memory data available", style="dim")
 
-        return Panel(content, title="Memory", border_style="yellow", box=box.ROUNDED)
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="Memory",
+            border_style="yellow",
+            box=box.ROUNDED,
+        )
 
     def _create_disk_panel(self) -> Panel:
         """Create compact disk panel."""
-        content = Text()
+        content = Text(justify="center")
 
         if self.last_disk:
             disk = self.last_disk
-            content.append_text(create_bar(disk.usage_percent, width=10, label="Disk"))
-            content.append("\n")
+            content.append_text(create_bar(disk.usage_percent, width=16, label="Disk"))
+            content.append("\n\n")
             if disk.usage_source:
                 content.append(f"{disk.usage_source} ", style="dim")
             content.append(
@@ -630,7 +651,7 @@ class MetopApp:
                 style="bold",
             )
             content.append(f"  |  free {format_bytes(disk.free_bytes)}", style="green")
-            content.append("\n")
+            content.append("\n\n")
             content.append(
                 f"R {format_rate(disk.read_bytes_per_sec)}  |  W {format_rate(disk.write_bytes_per_sec)}",
                 style="dim",
@@ -638,7 +659,12 @@ class MetopApp:
         else:
             content.append("No disk data available", style="dim")
 
-        return Panel(content, title="Disk", border_style="blue", box=box.ROUNDED)
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="Disk",
+            border_style="blue",
+            box=box.ROUNDED,
+        )
 
     def _create_sparkline(self, history: list[float], width: int = 22) -> str:
         """Create a sparkline from history data."""
