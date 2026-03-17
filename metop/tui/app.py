@@ -878,7 +878,7 @@ class MetopApp:
                 f"{process.gpu_percent:5.1f}%",
                 style=get_utilization_color(min(process.gpu_percent, 100.0)),
             )
-            cpu_percent = Text(f"{process.cpu_percent:5.1f}%", style="cyan")
+            cpu_percent = Text(f"{process.cpu_percent:5.1f}%", style="yellow")
             row_style = "bold black on bright_cyan" if is_selected else ""
 
             table.add_row(
