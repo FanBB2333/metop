@@ -62,6 +62,28 @@ metop --layout classic
 metop --debug
 ```
 
+## ANE Load Test
+
+If you want to verify that the ANE panel is reacting to a real Core ML workload,
+you can run the helper script below in one terminal and `metop` in another:
+
+```bash
+# Terminal 1: create sustained Core ML inference load
+swift scripts/ane_stress.swift --seconds 30 --workers 4
+
+# Terminal 2: watch ANE metrics
+sudo metop -i 500
+```
+
+The script uses a tiny bundled Core ML model in
+`resources/models/tiny_ane_stress.mlmodel`, requests `CPU + Neural Engine`
+execution by default, and loops inference long enough to make ANE activity
+visible in `powermetrics` without downloading a large external model.
+
+Important: Apple does not expose a public API to drive the ANE directly. The
+actual placement is still decided by Core ML based on model/operator support, so
+unsupported parts can fall back to CPU.
+
 ## Screenshot
 
 ![metop main screen](resources/sample1.png)
