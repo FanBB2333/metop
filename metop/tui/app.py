@@ -227,6 +227,19 @@ class MetopApp:
     """
 
     DISPLAY_MODES = ("stacked", "classic")
+    PROCESS_TABLE_COLUMNS = (
+        {"key": None, "label": "", "width": 2, "no_wrap": True, "sortable": False},
+        {"key": "name", "label": "Process", "ratio": 3, "overflow": "ellipsis", "sortable": True, "default_desc": False},
+        {"key": "gpu_percent", "label": "GPU %", "width": 8, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": True},
+        {"key": "gpu_time_ms", "label": "GPU Time", "width": 10, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": True},
+        {"key": "cpu_percent", "label": "CPU %", "width": 8, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": True},
+        {"key": "memory_rss_bytes", "label": "RSS", "width": 10, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": True},
+        {"key": "thread_count", "label": "Thr", "width": 5, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": True},
+        {"key": "api", "label": "API", "width": 10, "no_wrap": True, "sortable": True, "default_desc": False},
+        {"key": "command_queue_count", "label": "Q", "width": 3, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": True},
+        {"key": "status", "label": "State", "width": 10, "no_wrap": True, "sortable": True, "default_desc": False},
+        {"key": "pid", "label": "PID", "width": 7, "justify": "right", "no_wrap": True, "sortable": True, "default_desc": False},
+    )
 
     def __init__(
         self,
@@ -270,6 +283,8 @@ class MetopApp:
         self.selected_process_pid: Optional[int] = None
         self.selected_process_index = 0
         self.process_scroll_offset = 0
+        self.process_sort_key = "gpu_time_ms"
+        self.process_sort_desc = True
 
         self._input = InputController()
         self._sample_queue: queue.Queue[dict] = queue.Queue(maxsize=1)
@@ -377,7 +392,7 @@ class MetopApp:
 
     def _sync_process_selection(self) -> None:
         """Keep process selection stable across samples."""
-        processes = self.last_gpu.processes if self.last_gpu else []
+        processes = self._sorted_processes()
         if not processes:
             self.selected_process_pid = None
             self.selected_process_index = 0
@@ -398,13 +413,102 @@ class MetopApp:
 
     def _move_process_selection(self, delta: int) -> None:
         """Move the selected process up or down."""
-        processes = self.last_gpu.processes if self.last_gpu else []
+        processes = self._sorted_processes()
         if not processes:
             return
 
         next_index = self.selected_process_index + delta
         self.selected_process_index = max(0, min(len(processes) - 1, next_index))
         self.selected_process_pid = processes[self.selected_process_index].pid
+
+    def _process_sort_spec(self) -> dict:
+        """Return the active process sort column spec."""
+        for column in self.PROCESS_TABLE_COLUMNS:
+            if column.get("key") == self.process_sort_key:
+                return column
+        return self.PROCESS_TABLE_COLUMNS[3]
+
+    def _process_sort_value(self, process: ProcessGPUUsage, key: str):
+        """Extract a comparable value for the current sort key."""
+        value = getattr(process, key)
+        if isinstance(value, str):
+            return value.casefold()
+        return value
+
+    def _sorted_processes(self) -> list[ProcessGPUUsage]:
+        """Return processes in the currently selected sort order."""
+        processes = list(self.last_gpu.processes) if self.last_gpu else []
+        if not processes:
+            return []
+
+        sort_key = self.process_sort_key
+        return sorted(
+            processes,
+            key=lambda process: (self._process_sort_value(process, sort_key), process.pid),
+            reverse=self.process_sort_desc,
+        )
+
+    def _toggle_process_sort(self, sort_key: str) -> None:
+        """Toggle or change the process table sort order."""
+        spec = next(
+            (column for column in self.PROCESS_TABLE_COLUMNS if column.get("key") == sort_key),
+            None,
+        )
+        if spec is None or not spec.get("sortable"):
+            return
+
+        if self.process_sort_key == sort_key:
+            self.process_sort_desc = not self.process_sort_desc
+        else:
+            self.process_sort_key = sort_key
+            self.process_sort_desc = bool(spec.get("default_desc", False))
+
+        self._sync_process_selection()
+
+    def _process_header_label(self, column: dict) -> str:
+        """Render a process table header label with sort direction indicator."""
+        label = str(column.get("label", ""))
+        key = column.get("key")
+        if not key or not column.get("sortable"):
+            return label
+        if key != self.process_sort_key:
+            return label
+        direction = "▼" if self.process_sort_desc else "▲"
+        return f"{label} {direction}"
+
+    def _process_header_style(self, column: dict) -> str:
+        """Choose a background style for process table headers."""
+        key = column.get("key")
+        if key and key == self.process_sort_key:
+            return "bold black on bright_white"
+        return "bold white on blue"
+
+    def _process_header_regions(self, panel_x: int, panel_width: int) -> list[tuple[dict, int, int]]:
+        """Estimate clickable x-ranges for each process table header."""
+        content_x = panel_x + 2
+        content_width = max(1, panel_width - 4)
+        gap = 1
+        columns = list(self.PROCESS_TABLE_COLUMNS)
+        fixed_width = sum(int(column.get("width", 0)) for column in columns)
+        ratio_columns = [column for column in columns if "ratio" in column]
+        remaining_width = max(0, content_width - fixed_width - gap * (len(columns) - 1))
+        ratio_lengths = self._split_lengths(
+            remaining_width,
+            [int(column.get("ratio", 0)) for column in ratio_columns],
+        )
+        ratio_iter = iter(ratio_lengths)
+
+        regions: list[tuple[dict, int, int]] = []
+        current_x = content_x
+        for column in columns:
+            if "width" in column:
+                width = int(column["width"])
+            else:
+                width = max(len(self._process_header_label(column)), next(ratio_iter, 0))
+            regions.append((column, current_x, current_x + width - 1))
+            current_x += width + gap
+
+        return regions
 
     def _visible_process_limit(self) -> int:
         """Estimate how many process rows fit in the current process panel."""
@@ -498,7 +602,7 @@ class MetopApp:
 
     def _visible_process_slice(self, limit: int) -> tuple[list[ProcessGPUUsage], int, int]:
         """Return the visible process window and clamp scroll/selection."""
-        processes = self.last_gpu.processes if self.last_gpu else []
+        processes = self._sorted_processes()
         if not processes:
             self.process_scroll_offset = 0
             return [], 0, 0
@@ -859,17 +963,14 @@ class MetopApp:
         visible_processes, start_index, _ = self._visible_process_slice(limit)
 
         table = Table(box=None, expand=True, pad_edge=False, show_header=True)
-        table.add_column("", width=2, no_wrap=True)
-        table.add_column("Process", overflow="ellipsis", ratio=3)
-        table.add_column("GPU %", justify="right", width=8, no_wrap=True)
-        table.add_column("GPU Time", justify="right", width=10, no_wrap=True)
-        table.add_column("CPU %", justify="right", width=8, no_wrap=True)
-        table.add_column("RSS", justify="right", width=10, no_wrap=True)
-        table.add_column("Thr", justify="right", width=5, no_wrap=True)
-        table.add_column("API", width=10, no_wrap=True)
-        table.add_column("Q", justify="right", width=3, no_wrap=True)
-        table.add_column("State", width=10, no_wrap=True)
-        table.add_column("PID", justify="right", width=7, no_wrap=True)
+        for column in self.PROCESS_TABLE_COLUMNS:
+            kwargs = {
+                "header_style": self._process_header_style(column),
+            }
+            for option in ("width", "justify", "no_wrap", "overflow", "ratio"):
+                if option in column:
+                    kwargs[option] = column[option]
+            table.add_column(self._process_header_label(column), **kwargs)
 
         for row_index, process in enumerate(visible_processes, start=start_index):
             is_selected = row_index == self.selected_process_index
@@ -901,12 +1002,14 @@ class MetopApp:
     def _create_process_details(self, visible_start: int, visible_end: int) -> Text:
         """Create selected-process detail line."""
         details = Text(no_wrap=True, overflow="ellipsis")
-        processes = self.last_gpu.processes if self.last_gpu else []
+        processes = self._sorted_processes()
         if not processes:
             details.append("No selected process", style="dim")
             return details
 
         selected = processes[self.selected_process_index]
+        sort_spec = self._process_sort_spec()
+        sort_direction = "desc" if self.process_sort_desc else "asc"
         details.append("Selected: ", style="bold")
         details.append(selected.name, style="bold cyan")
         details.append(f"  |  pid {selected.pid}", style="dim")
@@ -926,7 +1029,11 @@ class MetopApp:
             f"  |  visible {visible_start + 1}-{visible_end}/{len(processes)}",
             style="dim",
         )
-        details.append("  |  ↑/↓ select  |  wheel scroll", style="dim")
+        details.append(
+            f"  |  sort {sort_spec['label']} {sort_direction}",
+            style="dim",
+        )
+        details.append("  |  ↑/↓ select  |  wheel scroll  |  click header sort", style="dim")
         return details
 
     def _create_process_panel(self) -> Panel:
@@ -975,13 +1082,38 @@ class MetopApp:
             return False
 
         clicked_index = start_index + (y - data_start_y)
-        processes = self.last_gpu.processes
+        processes = self._sorted_processes()
         if not (0 <= clicked_index < len(processes)):
             return False
 
         self.selected_process_index = clicked_index
         self.selected_process_pid = processes[clicked_index].pid
         return True
+
+    def _sort_process_from_click(self, x: int, y: int) -> bool:
+        """Toggle process sorting when a sortable header cell is clicked."""
+        if len(self.gpu_history) < 2 or not self.last_gpu or not self.last_gpu.processes:
+            return False
+
+        panel_x, panel_y, panel_width, panel_height = self._process_panel_region()
+        if not (
+            panel_x <= x <= panel_x + panel_width - 1
+            and panel_y <= y <= panel_y + panel_height - 1
+        ):
+            return False
+
+        header_y = panel_y + 1
+        if y != header_y:
+            return False
+
+        for column, start_x, end_x in self._process_header_regions(panel_x, panel_width):
+            if not column.get("sortable"):
+                continue
+            if start_x <= x <= end_x:
+                self._toggle_process_sort(str(column["key"]))
+                return True
+
+        return False
 
     def _create_stacked_layout(self) -> Layout:
         """Create the default stacked layout."""
@@ -1058,8 +1190,12 @@ class MetopApp:
         for event in self._input.read_events():
             if event.startswith("left_click:"):
                 _, x_text, y_text = event.split(":", 2)
+                click_x = int(x_text)
+                click_y = int(y_text) + 1
                 state_changed = (
-                    self._select_process_from_click(int(x_text), int(y_text) + 1) or state_changed
+                    self._sort_process_from_click(click_x, click_y)
+                    or self._select_process_from_click(click_x, click_y)
+                    or state_changed
                 )
                 continue
 
