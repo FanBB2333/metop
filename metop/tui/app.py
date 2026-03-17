@@ -943,7 +943,9 @@ class MetopApp:
         for event in self._input.read_events():
             if event.startswith("left_click:"):
                 _, x_text, y_text = event.split(":", 2)
-                state_changed = self._select_process_from_click(int(x_text), int(y_text)) or state_changed
+                state_changed = (
+                    self._select_process_from_click(int(x_text), int(y_text) + 1) or state_changed
+                )
                 continue
 
             lowered = event.lower()
