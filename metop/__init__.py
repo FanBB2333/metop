@@ -5,5 +5,5 @@ A Python-based monitoring tool that provides detailed GPU (Metal/MPS)
 and ANE (Apple Neural Engine) utilization metrics for ML developers.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "metop contributors"
