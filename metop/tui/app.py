@@ -68,6 +68,15 @@ def format_power(power_mw: float) -> str:
     return f"{power_mw / 1000:.2f} W"
 
 
+def format_frequency_mhz(freq_mhz: float) -> str:
+    """Format MHz values without rounding small non-zero frequencies down to 0."""
+    if freq_mhz >= 100:
+        return f"{freq_mhz:.0f} MHz"
+    if freq_mhz >= 10:
+        return f"{freq_mhz:.1f} MHz"
+    return f"{freq_mhz:.2f} MHz"
+
+
 def format_duration_ms(duration_ms: float) -> str:
     """Format milliseconds into a compact duration string."""
     if duration_ms < 1000:
@@ -546,7 +555,7 @@ class MetopApp:
             )
             content.append("\n")
             content.append(
-                f"Mem {format_bytes(gpu.memory_used_bytes)} / "
+                f"Shared Mem in-use/alloc {format_bytes(gpu.memory_used_bytes)} / "
                 f"{format_bytes(gpu.memory_allocated_bytes)}",
                 style="green",
             )
@@ -557,11 +566,11 @@ class MetopApp:
             ):
                 parts: list[str] = []
                 if self.last_power.gpu_freq_mhz > 0:
-                    parts.append(f"Freq {self.last_power.gpu_freq_mhz:.0f} MHz")
+                    parts.append(f"Freq {format_frequency_mhz(self.last_power.gpu_freq_mhz)}")
                 if self.last_power.gpu_active_residency > 0:
-                    parts.append(f"Active {self.last_power.gpu_active_residency:.1f}%")
+                    parts.append(f"Active resid {self.last_power.gpu_active_residency:.1f}%")
                 if self.last_power.gpu_idle_residency > 0:
-                    parts.append(f"Idle {self.last_power.gpu_idle_residency:.1f}%")
+                    parts.append(f"Idle resid {self.last_power.gpu_idle_residency:.1f}%")
                 if parts:
                     content.append("\n")
                     content.append(" | ".join(parts), style="dim")
@@ -609,11 +618,11 @@ class MetopApp:
             ):
                 parts = []
                 if self.last_power.ane_freq_mhz > 0:
-                    parts.append(f"Freq {self.last_power.ane_freq_mhz:.0f} MHz")
+                    parts.append(f"Freq {format_frequency_mhz(self.last_power.ane_freq_mhz)}")
                 if self.last_power.ane_active_residency > 0:
-                    parts.append(f"Active {self.last_power.ane_active_residency:.1f}%")
+                    parts.append(f"Active resid {self.last_power.ane_active_residency:.1f}%")
                 if self.last_power.ane_idle_residency > 0:
-                    parts.append(f"Idle {self.last_power.ane_idle_residency:.1f}%")
+                    parts.append(f"Idle resid {self.last_power.ane_idle_residency:.1f}%")
                 if parts:
                     content.append("\n")
                     content.append(" | ".join(parts), style="dim")
@@ -681,11 +690,11 @@ class MetopApp:
             if power.gpu_freq_mhz > 0 or power.gpu_active_residency > 0 or power.gpu_idle_residency > 0:
                 parts: list[str] = []
                 if power.gpu_freq_mhz > 0:
-                    parts.append(f"GPU {power.gpu_freq_mhz:.0f} MHz")
+                    parts.append(f"GPU {format_frequency_mhz(power.gpu_freq_mhz)}")
                 if power.gpu_active_residency > 0:
-                    parts.append(f"active {power.gpu_active_residency:.1f}%")
+                    parts.append(f"active resid {power.gpu_active_residency:.1f}%")
                 if power.gpu_idle_residency > 0:
-                    parts.append(f"idle {power.gpu_idle_residency:.1f}%")
+                    parts.append(f"idle resid {power.gpu_idle_residency:.1f}%")
                 if parts:
                     content.append("\n")
                     content.append(" | ".join(parts), style="dim")
@@ -695,11 +704,11 @@ class MetopApp:
             ):
                 parts = []
                 if power.ane_freq_mhz > 0:
-                    parts.append(f"ANE {power.ane_freq_mhz:.0f} MHz")
+                    parts.append(f"ANE {format_frequency_mhz(power.ane_freq_mhz)}")
                 if power.ane_active_residency > 0:
-                    parts.append(f"active {power.ane_active_residency:.1f}%")
+                    parts.append(f"active resid {power.ane_active_residency:.1f}%")
                 if power.ane_idle_residency > 0:
-                    parts.append(f"idle {power.ane_idle_residency:.1f}%")
+                    parts.append(f"idle resid {power.ane_idle_residency:.1f}%")
                 if parts:
                     content.append("\n")
                     content.append(" | ".join(parts), style="dim")

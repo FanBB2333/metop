@@ -6,7 +6,7 @@ A Python-based GPU/ANE monitoring tool for Apple Silicon Macs. Like `nvtop` or `
 
 - **GPU Monitoring** (no sudo required)
   - Device, Renderer, and Tiler utilization percentage
-  - GPU memory usage (in-use vs allocated)
+  - GPU shared memory usage (in-use vs allocated)
   - Top GPU-active processes from AGX user client GPU time deltas
   - Selectable process list with keyboard and mouse-wheel scrolling
   - Real-time sparkline history
@@ -95,6 +95,7 @@ Uses `IOKit` via `ioreg` command to query the `AGXAccelerator` driver's `Perform
 - `Device Utilization %` - Overall GPU busy percentage
 - `Renderer Utilization %` - Shader/compute units
 - `Tiler Utilization %` - Geometry processing
+- `Shared Mem in-use/alloc` - AGX shared system memory currently in use versus memory allocated/reserved by the GPU driver. This is not total system RAM and not discrete VRAM.
 - Per-process GPU activity by diffing each AGX user client's `accumulatedGPUTime`
 
 Per-process activity is reported as GPU time over the sample window, normalized
@@ -103,6 +104,10 @@ hardware residency counter.
 
 ### ANE + Power Metrics
 Uses `powermetrics` (`-f plist`) to collect CPU/GPU/ANE power and residency/frequency data. Requires `sudo` because `powermetrics` needs root access.
+
+In the GPU / ANE panel:
+- `Freq` is the accelerator clock frequency reported by `powermetrics` when available.
+- `Active resid` / `Idle resid` are residency percentages over the sample window. They describe how long the accelerator stayed active or idle, and are not the same thing as the direct GPU utilization bar from `ioreg`.
 
 ANE utilization is estimated from:
 - preferred: ANE active residency reported by `powermetrics`

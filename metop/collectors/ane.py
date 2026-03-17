@@ -59,6 +59,25 @@ class ANECollector:
         if isinstance(value, (int, float)):
             return float(value)
         return None
+
+    @classmethod
+    def _normalize_freq_mhz(cls, value: Any) -> float:
+        """
+        Normalize powermetrics frequency fields to MHz.
+
+        Different powermetrics sampler blocks have been observed to report
+        frequency-like values in Hz, kHz, or already in MHz depending on the
+        field/platform. This keeps the UI from showing misleading values like
+        "Freq 0 MHz" when the raw sample is actually 400000 (kHz).
+        """
+        raw = cls._safe_float(value)
+        if raw is None or raw <= 0:
+            return 0.0
+        if raw >= 1_000_000:
+            return raw / 1e6
+        if raw >= 1_000:
+            return raw / 1e3
+        return raw
     
     def _parse_powermetrics_plist(
         self, data: Dict[str, Any]
@@ -82,9 +101,9 @@ class ANECollector:
                     continue
                 name = str(cluster.get("name", ""))
                 idle_ratio = self._safe_float(cluster.get("idle_ratio"))
-                freq_hz = self._safe_float(cluster.get("freq_hz"))
+                freq_mhz = self._normalize_freq_mhz(cluster.get("freq_hz"))
                 active = (1 - idle_ratio) * 100 if idle_ratio is not None else 0.0
-                freq = int(freq_hz / 1e6) if freq_hz is not None else 0
+                freq = int(freq_mhz) if freq_mhz > 0 else 0
                 
                 if name.startswith("E"):
                     e_active = max(e_active, active)
@@ -124,12 +143,9 @@ class ANECollector:
         gpu_active_residency = 0.0
         gpu_block = data.get("gpu")
         if isinstance(gpu_block, dict):
-            freq_hz = self._safe_float(gpu_block.get("freq_hz"))
-            freq_mhz = self._safe_float(gpu_block.get("freq"))
-            if freq_hz is not None:
-                gpu_freq_mhz = freq_hz / 1e6
-            elif freq_mhz is not None:
-                gpu_freq_mhz = freq_mhz
+            gpu_freq_mhz = self._normalize_freq_mhz(gpu_block.get("freq_hz"))
+            if gpu_freq_mhz <= 0:
+                gpu_freq_mhz = self._normalize_freq_mhz(gpu_block.get("freq"))
             
             idle_ratio = self._safe_float(gpu_block.get("idle_ratio"))
             if idle_ratio is not None:
@@ -142,27 +158,29 @@ class ANECollector:
         ane_active_residency = 0.0
         ane_block = data.get("ane")
         if isinstance(ane_block, dict):
-            freq_hz = self._safe_float(ane_block.get("freq_hz"))
-            if freq_hz is not None:
-                ane_freq_mhz = freq_hz / 1e6
+            ane_freq_mhz = self._normalize_freq_mhz(ane_block.get("freq_hz"))
+            if ane_freq_mhz <= 0:
+                ane_freq_mhz = self._normalize_freq_mhz(ane_block.get("freq"))
             idle_ratio = self._safe_float(ane_block.get("idle_ratio"))
             if idle_ratio is not None:
                 ane_idle_residency = max(0.0, min(100.0, idle_ratio * 100))
                 ane_active_residency = 100.0 - ane_idle_residency
         elif isinstance(ane_block, list):
             idle_ratios: list[float] = []
-            freqs_hz: list[float] = []
+            freqs_mhz: list[float] = []
             for item in ane_block:
                 if not isinstance(item, dict):
                     continue
                 idle_ratio = self._safe_float(item.get("idle_ratio"))
                 if idle_ratio is not None:
                     idle_ratios.append(idle_ratio)
-                freq_hz = self._safe_float(item.get("freq_hz"))
-                if freq_hz is not None:
-                    freqs_hz.append(freq_hz)
-            if freqs_hz:
-                ane_freq_mhz = max(freqs_hz) / 1e6
+                freq_mhz = self._normalize_freq_mhz(item.get("freq_hz"))
+                if freq_mhz <= 0:
+                    freq_mhz = self._normalize_freq_mhz(item.get("freq"))
+                if freq_mhz > 0:
+                    freqs_mhz.append(freq_mhz)
+            if freqs_mhz:
+                ane_freq_mhz = max(freqs_mhz)
             if idle_ratios:
                 idle_ratio_avg = sum(idle_ratios) / len(idle_ratios)
                 ane_idle_residency = max(0.0, min(100.0, idle_ratio_avg * 100))
